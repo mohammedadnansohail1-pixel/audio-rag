@@ -1,0 +1,64 @@
+# Audio RAG Base Configuration
+# Override in development.yaml, production.yaml, or via environment variables
+
+asr:
+  backend: "faster-whisper"
+  model_size: "large-v3"
+  device: "auto"
+  compute_type: "float16"
+  vad_filter: true
+  vad_threshold: 0.5
+  language: null  # auto-detect
+
+diarization:
+  backend: "pyannote"
+  model: "pyannote/speaker-diarization-3.1"
+  device: "auto"
+  min_speakers: null
+  max_speakers: null
+  min_speech_duration_ms: 250
+
+alignment:
+  method: "word_level"
+  use_whisperx: true
+
+chunking:
+  strategy: "speaker_turn"
+  max_tokens: 500
+  overlap_tokens: 50
+  min_chunk_tokens: 50
+
+embedding:
+  backend: "bge-m3"
+  model: "BAAI/bge-m3"
+  device: "auto"
+  batch_size: 32
+  normalize: true
+
+retrieval:
+  backend: "qdrant"
+  collection_name: "audio_rag"
+  search_type: "hybrid"
+  top_k: 5
+  score_threshold: 0.0
+  qdrant_host: "localhost"
+  qdrant_port: 6333
+  qdrant_in_memory: false
+
+tts:
+  backend: "edge-tts"
+  model: "en_US-lessac-medium"
+  fallback_backend: "edge-tts"
+  output_format: "wav"
+  sample_rate: 22050
+
+resources:
+  max_vram_gb: 12.0
+  max_ram_gb: 20.0
+  unload_after_idle_seconds: 300
+  subprocess_isolation: true
+  max_audio_duration_minutes: 30
+
+log_level: "INFO"
+data_dir: "./data"
+cache_dir: "./cache"

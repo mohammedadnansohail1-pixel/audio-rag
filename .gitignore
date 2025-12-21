@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Audio samples and output (don't commit large files)
+data/samples/*.mp3
+data/samples/*.wav
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# UV
+uv.lock
+
+# Cache
+.cache/
+*.cache
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db

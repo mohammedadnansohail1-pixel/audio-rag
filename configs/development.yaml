@@ -1,0 +1,18 @@
+# Development overrides - lighter models, faster iteration
+
+asr:
+  model_size: "base"  # Faster for testing
+  compute_type: "float32"  # More compatible
+
+diarization:
+  min_speakers: 1
+  max_speakers: 4
+
+retrieval:
+  qdrant_in_memory: true  # No Docker needed for dev
+
+resources:
+  max_vram_gb: 8.0
+  subprocess_isolation: false  # Easier debugging
+
+log_level: "DEBUG"

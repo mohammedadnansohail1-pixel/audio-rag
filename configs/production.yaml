@@ -1,0 +1,23 @@
+# Production overrides - full quality, safety features
+
+asr:
+  model_size: "large-v3"
+  compute_type: "float16"
+
+diarization:
+  min_speech_duration_ms: 500  # Reduce noise
+
+chunking:
+  max_tokens: 500
+  overlap_tokens: 75  # More context preservation
+
+retrieval:
+  qdrant_in_memory: false
+  score_threshold: 0.3  # Filter low-quality matches
+
+resources:
+  max_vram_gb: 12.0
+  subprocess_isolation: true  # Memory leak protection
+  max_audio_duration_minutes: 30
+
+log_level: "INFO"
