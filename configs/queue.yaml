@@ -1,0 +1,44 @@
+# Audio RAG Queue Configuration
+# Override in environment-specific configs or via environment variables
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: null  # Set via REDIS_PASSWORD env var in production
+  socket_timeout: 5.0
+  socket_connect_timeout: 5.0
+  max_retries: 3
+  retry_backoff: 1.0
+
+queues:
+  # Priority order: high > normal > low
+  # Workers process high priority first
+  - name: "high"
+    timeout: 3600      # 1 hour max for priority jobs
+    max_depth: 50      # Limit to prevent abuse
+  
+  - name: "normal"
+    timeout: 1800      # 30 min for standard jobs
+    max_depth: 100
+  
+  - name: "low"
+    timeout: 3600      # 1 hour for batch/free tier
+    max_depth: 200     # Allow more queuing
+
+worker:
+  max_memory_mb: 10000           # 10GB GPU budget (leave 2GB headroom on 12GB card)
+  poll_interval: 1.0             # Check queues every 1s
+  job_timeout: 1800              # 30 min default
+  heartbeat_interval: 30         # Health check every 30s
+  shutdown_timeout: 60           # Wait 60s for graceful shutdown
+  max_consecutive_failures: 3    # Pause after 3 failures
+
+# Idempotency: prevent duplicate job processing
+idempotency_ttl: 86400    # 24 hours
+
+# Results: how long to keep job results
+result_ttl: 86400         # 24 hours
+
+# Checkpoints: for job recovery
+checkpoint_ttl: 86400     # 24 hours

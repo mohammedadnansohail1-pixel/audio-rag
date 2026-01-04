@@ -1,0 +1,79 @@
+# =============================================================================
+# Audio RAG GPU Worker Dockerfile
+# For ML inference: ASR, Diarization, Embeddings
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Builder - Install dependencies
+# -----------------------------------------------------------------------------
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /build
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    uv sync --frozen --no-dev --no-install-project
+
+COPY src/ ./src/
+COPY configs/ ./configs/
+
+RUN . /opt/venv/bin/activate && \
+    uv sync --frozen --no-dev
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime - GPU-enabled production image
+# -----------------------------------------------------------------------------
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime AS runtime
+
+LABEL maintainer="Adnan"
+LABEL description="Audio RAG GPU Worker"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home appuser
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /build/src ./src
+COPY --from=builder /build/configs ./configs
+
+RUN mkdir -p /app/data /app/logs /app/models /app/uploads && \
+    chown -R appuser:appuser /app
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="/app/src" \
+    CUDA_VISIBLE_DEVICES=0 \
+    TORCH_HOME=/app/models \
+    HF_HOME=/app/models/huggingface \
+    AUDIO_RAG_ENV=production
+
+USER appuser
+
+# No port - worker connects to Redis
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import redis; r=redis.from_url('${REDIS_URL:-redis://localhost:6379}'); r.ping()" || exit 1
+
+CMD ["python", "-m", "audio_rag.queue.worker"]

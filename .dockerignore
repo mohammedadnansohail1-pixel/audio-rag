@@ -1,0 +1,77 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+env
+ENV
+.eggs
+*.egg-info
+*.egg
+dist
+build
+.mypy_cache
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Testing
+tests/
+.pytest_cache/
+coverage.xml
+*.cover
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Local development
+*.local
+.env.local
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Data (mount these instead)
+data/
+uploads/
+outputs/
+
+# Models (download at runtime or mount)
+models/
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints
+
+# Temporary files
+tmp/
+temp/
+*.tmp

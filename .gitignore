@@ -28,3 +28,15 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Environment
+.env
+.env.local
+
+# Docker overrides
+docker-compose.override.yml

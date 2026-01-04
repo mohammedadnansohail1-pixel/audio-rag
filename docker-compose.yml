@@ -1,0 +1,132 @@
+# =============================================================================
+# Audio RAG Docker Compose
+# Usage:
+#   Development:  docker compose up -d
+#   With GPU:     docker compose --profile gpu up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  
+  redis:
+    image: redis:7-alpine
+    container_name: audio-rag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - audio-rag-network
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.0
+    container_name: audio-rag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - audio-rag-network
+
+  # ---------------------------------------------------------------------------
+  # Application
+  # ---------------------------------------------------------------------------
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: audio-rag-api
+    ports:
+      - "8000:8000"
+    environment:
+      - AUDIO_RAG_ENV=production
+      - AUDIO_RAG_LOG_LEVEL=INFO
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - UVICORN_WORKERS=4
+    volumes:
+      - uploads_data:/app/uploads
+      - logs_data:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - audio-rag-network
+
+  # GPU Worker - only with --profile gpu
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: audio-rag-worker
+    profiles:
+      - gpu
+    environment:
+      - AUDIO_RAG_ENV=production
+      - AUDIO_RAG_LOG_LEVEL=INFO
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - WORKER_QUEUE=high,normal,low
+      - CUDA_VISIBLE_DEVICES=0
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - uploads_data:/app/uploads
+      - models_data:/app/models
+      - logs_data:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ipc: host
+    shm_size: '2gb'
+    restart: unless-stopped
+    networks:
+      - audio-rag-network
+
+networks:
+  audio-rag-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  qdrant_data:
+  uploads_data:
+  models_data:
+  logs_data:
