@@ -17,7 +17,7 @@ class ASRConfig(BaseModel):
 
 class DiarizationConfig(BaseModel):
     """Speaker diarization configuration."""
-    backend: Literal["pyannote"] = "pyannote"
+    backend: Literal["pyannote", "nemo"] = "nemo"
     model: str = "pyannote/speaker-diarization-3.1"
     device: Literal["cuda", "cpu", "auto"] = "auto"
     min_speakers: int | None = None

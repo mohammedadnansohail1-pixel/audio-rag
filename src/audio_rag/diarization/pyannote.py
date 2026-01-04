@@ -51,7 +51,7 @@ class PyAnnoteDiarizer(BaseDiarizer):
             
             self._pipeline = Pipeline.from_pretrained(
                 self.config.model,
-                use_auth_token=self._get_hf_token(),
+                token=self._get_hf_token(),
             )
             
             # Move to device
@@ -142,7 +142,7 @@ class PyAnnoteDiarizer(BaseDiarizer):
             
             # Convert to TranscriptSegment
             segments = []
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
+            for turn, _, speaker in diarization.speaker_diarization.itertracks(yield_label=True):
                 segments.append(
                     TranscriptSegment(
                         text="",  # Filled by alignment

@@ -73,6 +73,14 @@ class WorkerConfig(BaseModel):
         le=10,
         description="Max consecutive job failures before worker pauses",
     )
+    preload_models: bool = Field(
+        default=True,
+        description="Preload ML models on worker startup",
+    )
+    queue_prefix: str = Field(
+        default="audio_rag",
+        description="Prefix for queue names",
+    )
 
 
 class RedisConfig(BaseModel):

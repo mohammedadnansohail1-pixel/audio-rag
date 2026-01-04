@@ -7,7 +7,6 @@ Features:
 - Checkpoint-based recovery
 - Health monitoring
 """
-
 from __future__ import annotations
 
 import json
@@ -55,13 +54,13 @@ WORKER_PREFIX = f"{KEY_PREFIX}worker:"
 
 def get_gpu_memory_info() -> dict[str, float]:
     """Get GPU memory information.
-    
+
     Returns:
         Dict with total_mb, used_mb, free_mb, utilization
     """
     try:
         import torch
-        
+
         if not torch.cuda.is_available():
             return {
                 "total_mb": 0,
@@ -70,16 +69,16 @@ def get_gpu_memory_info() -> dict[str, float]:
                 "utilization": 0,
                 "available": False,
             }
-        
+
         device = torch.cuda.current_device()
         total = torch.cuda.get_device_properties(device).total_memory
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
-        
+
         total_mb = total / (1024 * 1024)
         used_mb = reserved / (1024 * 1024)
         free_mb = (total - reserved) / (1024 * 1024)
-        
+
         return {
             "total_mb": total_mb,
             "used_mb": used_mb,
@@ -87,6 +86,7 @@ def get_gpu_memory_info() -> dict[str, float]:
             "utilization": used_mb / total_mb if total_mb > 0 else 0,
             "available": True,
         }
+
     except ImportError:
         return {
             "total_mb": 0,
@@ -101,379 +101,242 @@ def clear_gpu_memory() -> None:
     """Clear GPU memory cache."""
     try:
         import torch
-        
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             logger.debug("GPU memory cache cleared")
+
     except ImportError:
         pass
 
 
 class GPUWorker:
-    """GPU-enabled worker for Audio RAG jobs.
-    
-    Handles:
-    - Model preloading at startup
-    - Memory budget enforcement
-    - Job processing with checkpoints
-    - Graceful shutdown
-    - Health reporting
-    
-    Example:
-        worker = GPUWorker.from_config(config)
-        worker.start()  # Blocks until shutdown
+    """GPU-enabled worker for Audio RAG processing.
+
+    Features:
+    - Preloads ML models for efficiency
+    - Monitors GPU memory
+    - Graceful shutdown on SIGTERM/SIGINT
+    - Health endpoint for Kubernetes
     """
-    
+
     def __init__(
         self,
-        connection_manager: RedisConnectionManager,
-        config: QueueConfig,
+        redis_manager: RedisConnectionManager,
+        config: WorkerConfig,
         worker_id: str | None = None,
-    ) -> None:
-        """Initialize worker.
-        
-        Args:
-            connection_manager: Redis connection manager
-            config: Queue configuration
-            worker_id: Unique worker ID (auto-generated if not provided)
-        """
-        self.connection_manager = connection_manager
+    ):
+        self.redis_manager = redis_manager
         self.config = config
-        self.worker_config = config.worker
         self.worker_id = worker_id or f"worker-{os.getpid()}"
-        
+
+        self._shutdown_requested = False
+        self._current_job: str | None = None
         self._pipeline: AudioRAG | None = None
         self._rq_worker: Worker | None = None
-        self._shutdown_event = threading.Event()
-        self._running = False
-        self._consecutive_failures = 0
-    
+
+        # Setup signal handlers
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+
+        logger.info(f"GPUWorker {self.worker_id} initialized")
+
     @classmethod
     def from_config(
-        cls,
-        config: QueueConfig | None = None,
-        worker_id: str | None = None,
-    ) -> GPUWorker:
-        """Create worker from configuration."""
-        config = config or QueueConfig()
-        connection_manager = RedisConnectionManager(config.redis)
-        return cls(connection_manager, config, worker_id)
-    
-    def _get_redis(self) -> Redis:
-        """Get Redis connection."""
-        return self.connection_manager.get_connection()
-    
-    def _check_resources(self) -> None:
-        """Check if worker has sufficient resources.
-        
-        Raises:
-            WorkerResourceError: If resources insufficient
-        """
-        gpu_info = get_gpu_memory_info()
-        
-        if gpu_info["available"]:
-            if gpu_info["free_mb"] < 1000:  # Need at least 1GB free
-                raise WorkerResourceError(
-                    "Insufficient GPU memory",
-                    worker_id=self.worker_id,
-                    resource="gpu_memory",
-                    required=1000,
-                    available=gpu_info["free_mb"],
-                    unit="MB",
-                )
-        
-        # Check disk space
-        try:
-            import shutil
-            disk = shutil.disk_usage("/")
-            free_gb = disk.free / (1024 ** 3)
-            if free_gb < 1:
-                raise WorkerResourceError(
-                    "Insufficient disk space",
-                    worker_id=self.worker_id,
-                    resource="disk",
-                    required=1,
-                    available=free_gb,
-                    unit="GB",
-                )
-        except Exception as e:
-            logger.warning(f"Could not check disk space: {e}")
-    
-    def _load_pipeline(self) -> None:
-        """Load the Audio RAG pipeline.
-        
-        Raises:
-            WorkerStartupError: If pipeline loading fails
-        """
+        cls, config: QueueConfig, worker_id: str | None = None
+    ) -> "GPUWorker":
+        """Create worker from queue config."""
+        redis_manager = RedisConnectionManager(config.redis)
+        return cls(
+            redis_manager=redis_manager,
+            config=config.worker,
+            worker_id=worker_id,
+        )
+
+    def _handle_shutdown(self, signum: int, frame: Any) -> None:
+        """Handle shutdown signal."""
+        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        self._shutdown_requested = True
+
+        if self._rq_worker:
+            self._rq_worker.request_stop(signum, frame)
+
+    def _preload_models(self) -> None:
+        """Preload ML models to GPU memory."""
+        if not self.config.preload_models:
+            logger.info("Model preloading disabled")
+            return
+
+        logger.info("Preloading ML models...")
+
         try:
             from audio_rag.pipeline import AudioRAG
             from audio_rag.config import load_config
-            
-            logger.info("Loading Audio RAG pipeline...")
-            
-            # Load config
+
             config = load_config()
-            
-            # Initialize pipeline (loads models)
             self._pipeline = AudioRAG(config)
-            
-            logger.info("Pipeline loaded successfully")
-            
-        except ImportError as e:
-            raise WorkerStartupError(
-                f"Failed to import pipeline: {e}",
-                worker_id=self.worker_id,
-                stage="import",
-            ) from e
+
+            # Touch properties to trigger loading
+            _ = self._pipeline.embedder
+            if self._pipeline.embedder and not self._pipeline.embedder.is_loaded:
+                self._pipeline.embedder.load()
+
+            logger.info("Models preloaded successfully")
+
+            # Log GPU memory status
+            gpu_info = get_gpu_memory_info()
+            if gpu_info["available"]:
+                logger.info(
+                    f"GPU memory after preload: "
+                    f"{gpu_info['used_mb']:.0f}MB / {gpu_info['total_mb']:.0f}MB "
+                    f"({gpu_info['utilization']:.1%})"
+                )
+
         except Exception as e:
-            raise WorkerStartupError(
-                f"Failed to load pipeline: {e}",
-                worker_id=self.worker_id,
-                stage="load_models",
-            ) from e
-    
+            logger.error(f"Failed to preload models: {e}")
+            raise WorkerStartupError(f"Model preload failed: {e}")
+
     def _register_worker(self) -> None:
-        """Register worker in Redis for monitoring."""
-        key = f"{WORKER_PREFIX}{self.worker_id}"
-        
-        gpu_info = get_gpu_memory_info()
-        
-        data = {
-            "worker_id": self.worker_id,
-            "pid": os.getpid(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "status": "running",
-            "gpu_available": gpu_info["available"],
-            "gpu_total_mb": gpu_info["total_mb"],
-        }
-        
-        self._get_redis().setex(
-            key,
-            self.worker_config.heartbeat_interval * 3,  # TTL
-            json.dumps(data),
-        )
-    
+        """Register worker in Redis for health monitoring."""
+        try:
+            redis = self.redis_manager.get_sync_client()
+            worker_key = f"{WORKER_PREFIX}{self.worker_id}"
+
+            worker_info = {
+                "worker_id": self.worker_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "status": "running",
+                "gpu": get_gpu_memory_info(),
+                "pid": os.getpid(),
+            }
+
+            redis.setex(worker_key, 300, json.dumps(worker_info))  # 5 min TTL
+            logger.info(f"Worker {self.worker_id} registered")
+
+        except Exception as e:
+            logger.warning(f"Failed to register worker: {e}")
+
     def _update_heartbeat(self) -> None:
         """Update worker heartbeat in Redis."""
-        key = f"{WORKER_PREFIX}{self.worker_id}"
-        
-        gpu_info = get_gpu_memory_info()
-        
-        data = {
-            "worker_id": self.worker_id,
-            "pid": os.getpid(),
-            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
-            "status": "running",
-            "gpu_used_mb": gpu_info["used_mb"],
-            "gpu_free_mb": gpu_info["free_mb"],
-            "consecutive_failures": self._consecutive_failures,
-        }
-        
-        self._get_redis().setex(
-            key,
-            self.worker_config.heartbeat_interval * 3,
-            json.dumps(data),
-        )
-    
-    def _unregister_worker(self) -> None:
-        """Unregister worker from Redis."""
-        key = f"{WORKER_PREFIX}{self.worker_id}"
-        self._get_redis().delete(key)
-    
-    def _setup_signal_handlers(self) -> None:
-        """Setup signal handlers for graceful shutdown."""
-        def handle_signal(signum, frame):
-            logger.info(f"Received signal {signum}, initiating shutdown...")
-            self._shutdown_event.set()
-        
-        signal.signal(signal.SIGTERM, handle_signal)
-        signal.signal(signal.SIGINT, handle_signal)
-    
-    def _update_job_status(
-        self,
-        job_id: str,
-        status: JobStatus,
-        stage: JobStage,
-        error: str | None = None,
-    ) -> None:
-        """Update job status in Redis."""
-        key = f"{JOB_STATUS_PREFIX}{job_id}"
-        
-        data = {
-            "status": status.value,
-            "stage": stage.value,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "error": error,
-            "worker_id": self.worker_id,
-        }
-        
-        self._get_redis().setex(
-            key,
-            self.config.result_ttl,
-            json.dumps(data),
-        )
-    
-    def _save_checkpoint(
-        self,
-        job_id: str,
-        stage: JobStage,
-        data: dict[str, Any] | None = None,
-    ) -> None:
-        """Save job checkpoint for recovery."""
-        checkpoint = JobCheckpoint(
-            job_id=job_id,
-            stage=stage,
-            data=data or {},
-        )
-        
-        key = f"{CHECKPOINT_PREFIX}{job_id}"
-        self._get_redis().setex(
-            key,
-            self.config.checkpoint_ttl,
-            checkpoint.to_json(),
-        )
-    
-    def _get_checkpoint(self, job_id: str) -> JobCheckpoint | None:
-        """Get job checkpoint if exists."""
-        key = f"{CHECKPOINT_PREFIX}{job_id}"
-        data = self._get_redis().get(key)
-        
-        if data:
-            return JobCheckpoint.from_json(data)
-        return None
-    
-    def start(self) -> None:
-        """Start the worker (blocking).
-        
-        This method blocks until shutdown is requested.
-        
-        Raises:
-            WorkerStartupError: If startup fails
-        """
-        logger.info(f"Starting worker {self.worker_id}...")
-        
         try:
-            # Check resources
-            self._check_resources()
-            
-            # Load pipeline
-            self._load_pipeline()
-            
-            # Setup signal handlers
-            self._setup_signal_handlers()
-            
-            # Register worker
-            self._register_worker()
-            
-            # Create RQ worker
-            conn = self._get_redis()
-            queues = [q.name for q in self.config.queues]
-            
-            self._rq_worker = Worker(
-                queues=queues,
-                connection=conn,
-                name=self.worker_id,
-            )
-            
-            self._running = True
-            logger.info(f"Worker {self.worker_id} started, listening on queues: {queues}")
-            
-            # Start heartbeat thread
-            heartbeat_thread = threading.Thread(
-                target=self._heartbeat_loop,
-                daemon=True,
-            )
-            heartbeat_thread.start()
-            
-            # Run worker (blocking)
-            self._rq_worker.work(
-                burst=False,
-                logging_level=logging.INFO,
-            )
-            
-        except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received")
+            redis = self.redis_manager.get_sync_client()
+            worker_key = f"{WORKER_PREFIX}{self.worker_id}"
+
+            worker_info = {
+                "worker_id": self.worker_id,
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                "status": "running",
+                "current_job": self._current_job,
+                "gpu": get_gpu_memory_info(),
+            }
+
+            redis.setex(worker_key, 300, json.dumps(worker_info))
+
         except Exception as e:
-            logger.error(f"Worker error: {e}")
-            raise
-        finally:
-            self.shutdown()
-    
-    def _heartbeat_loop(self) -> None:
-        """Background thread for heartbeat updates."""
-        while self._running and not self._shutdown_event.is_set():
-            try:
+            logger.warning(f"Failed to update heartbeat: {e}")
+
+    def _start_heartbeat_thread(self) -> threading.Thread:
+        """Start background heartbeat thread."""
+
+        def heartbeat_loop():
+            while not self._shutdown_requested:
                 self._update_heartbeat()
-            except Exception as e:
-                logger.warning(f"Heartbeat update failed: {e}")
-            
-            self._shutdown_event.wait(self.worker_config.heartbeat_interval)
-    
-    def shutdown(self, timeout: float | None = None) -> None:
-        """Shutdown the worker gracefully.
-        
-        Args:
-            timeout: Maximum time to wait for shutdown
-        """
-        timeout = timeout or self.worker_config.shutdown_timeout
-        logger.info(f"Shutting down worker {self.worker_id}...")
-        
-        self._running = False
-        self._shutdown_event.set()
-        
-        # Stop RQ worker
-        if self._rq_worker:
-            try:
-                self._rq_worker.request_stop(signal.SIGTERM, None)
-            except Exception as e:
-                logger.warning(f"Error stopping RQ worker: {e}")
-        
-        # Unload pipeline
+                time.sleep(30)  # Update every 30 seconds
+
+        thread = threading.Thread(target=heartbeat_loop, daemon=True)
+        thread.start()
+        return thread
+
+    def start(self) -> None:
+        """Start the worker."""
+        logger.info(f"Starting GPUWorker {self.worker_id}")
+
+        # Check GPU
+        gpu_info = get_gpu_memory_info()
+        if gpu_info["available"]:
+            logger.info(
+                f"GPU available: {gpu_info['total_mb']:.0f}MB total, "
+                f"{gpu_info['free_mb']:.0f}MB free"
+            )
+        else:
+            logger.warning("No GPU available, running in CPU mode")
+
+        # Preload models
+        self._preload_models()
+
+        # Register worker
+        self._register_worker()
+
+        # Start heartbeat
+        self._start_heartbeat_thread()
+
+        # Get Redis connection and queues
+        redis_conn = self.redis_manager.get_sync_client()
+        queues = [
+            f"{self.config.queue_prefix}:{priority}"
+            for priority in ["high", "normal", "low"]
+        ]
+
+        # Create RQ worker
+        self._rq_worker = Worker(
+            queues=queues,
+            connection=redis_conn,
+            name=self.worker_id,
+        )
+
+        logger.info(f"Worker listening on queues: {queues}")
+
+        # Run worker
+        self._rq_worker.work(
+            with_scheduler=False,
+            burst=False,
+        )
+
+        logger.info(f"Worker {self.worker_id} stopped")
+
+    def stop(self) -> None:
+        """Stop the worker gracefully."""
+        logger.info(f"Stopping worker {self.worker_id}")
+        self._shutdown_requested = True
+
+        # Unload models
         if self._pipeline:
-            try:
-                # Pipeline cleanup if available
-                if hasattr(self._pipeline, "cleanup"):
-                    self._pipeline.cleanup()
-            except Exception as e:
-                logger.warning(f"Error cleaning up pipeline: {e}")
-            self._pipeline = None
-        
-        # Clear GPU memory
-        clear_gpu_memory()
-        
-        # Unregister worker
+            self._pipeline.unload_all()
+            clear_gpu_memory()
+
+        # Deregister from Redis
         try:
-            self._unregister_worker()
+            redis = self.redis_manager.get_sync_client()
+            worker_key = f"{WORKER_PREFIX}{self.worker_id}"
+            redis.delete(worker_key)
+
         except Exception as e:
-            logger.warning(f"Error unregistering worker: {e}")
-        
-        # Close Redis connection
-        self.connection_manager.close()
-        
-        logger.info(f"Worker {self.worker_id} shutdown complete")
+            logger.warning(f"Failed to deregister worker: {e}")
+
+        logger.info(f"Worker {self.worker_id} stopped")
 
 
-def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
+def process_ingest_job(job_data: dict) -> dict:
     """Process an ingestion job.
-    
-    This is the function called by RQ workers.
-    
+
+    This function is called by RQ to process jobs.
+
     Args:
         job_data: Serialized IngestJob data
-        
+
     Returns:
-        Serialized JobResult data
+        Serialized JobResult
     """
-    job = IngestJob.from_dict(job_data)
     started_at = datetime.now(timezone.utc)
-    
+    job = IngestJob.from_dict(job_data)
+
     logger.info(f"Processing job {job.job_id} (tenant={job.tenant_id})")
-    
+
     # Get Redis connection from current job
     rq_job = RQJob.fetch(job.job_id, connection=Redis())
     redis = rq_job.connection
-    
+
     # Update status to running
     status_key = f"{JOB_STATUS_PREFIX}{job.job_id}"
     redis.setex(
@@ -485,48 +348,54 @@ def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
             "updated_at": started_at.isoformat(),
         }),
     )
-    
+
     try:
         # Import pipeline here (worker process has it loaded)
         from audio_rag.pipeline import AudioRAG
         from audio_rag.config import load_config
-        
+
         # Load config and create pipeline
         config = load_config()
-        
+
         # Apply job-specific overrides
         if job.config_overrides:
             # Merge overrides into config
             for key, value in job.config_overrides.items():
                 if hasattr(config, key):
                     setattr(config, key, value)
-        
+
         # Initialize pipeline
         pipeline = AudioRAG(config)
-        
-        # Process the audio file
+
+        # Process the audio file with proper parameters
         result = pipeline.ingest(
             audio_path=job.audio_path,
-            collection_name=job.tenant_id,
+            collection_name=job.tenant_id,  # tenant_id maps to collection
             metadata=job.metadata,
+            enable_diarization=job.config_overrides.get("enable_diarization", True) if job.config_overrides else True,
+            language=job.config_overrides.get("language") if job.config_overrides else None,
         )
-        
+
         completed_at = datetime.now(timezone.utc)
-        
-        # Build result
+
+        # Build result using correct attribute names from IngestionResult
         job_result = JobResult(
             job_id=job.job_id,
             status=JobStatus.COMPLETED,
             stage=JobStage.COMPLETE,
             started_at=started_at,
             completed_at=completed_at,
-            chunks_created=result.chunks_created if hasattr(result, "chunks_created") else 0,
+            chunks_created=result.num_chunks,
             metrics={
-                "audio_duration_seconds": getattr(result, "audio_duration", 0),
+                "audio_duration_seconds": result.duration_seconds,
                 "processing_time_seconds": (completed_at - started_at).total_seconds(),
+                "num_segments": result.num_segments,
+                "num_speakers": len(result.speakers),
+                "language": result.language,
+                "collection": result.collection_name,
             },
         )
-        
+
         # Update status
         redis.setex(
             status_key,
@@ -535,21 +404,27 @@ def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
                 "status": JobStatus.COMPLETED.value,
                 "stage": JobStage.COMPLETE.value,
                 "updated_at": completed_at.isoformat(),
+                "result": {
+                    "chunks_created": result.num_chunks,
+                    "duration_seconds": result.duration_seconds,
+                    "speakers": result.speakers,
+                    "collection": result.collection_name,
+                },
             }),
         )
-        
+
         logger.info(
             f"Job {job.job_id} completed: {job_result.chunks_created} chunks, "
             f"{job_result.duration_seconds:.1f}s"
         )
-        
+
         return job_result.to_dict()
-        
+
     except Exception as e:
         completed_at = datetime.now(timezone.utc)
-        
+
         logger.error(f"Job {job.job_id} failed: {e}")
-        
+
         # Build error result
         job_result = JobResult(
             job_id=job.job_id,
@@ -560,7 +435,7 @@ def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
             error_message=str(e),
             error_type=type(e).__name__,
         )
-        
+
         # Update status
         redis.setex(
             status_key,
@@ -570,9 +445,10 @@ def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
                 "stage": JobStage.QUEUED.value,
                 "updated_at": completed_at.isoformat(),
                 "error": str(e),
+                "error_type": type(e).__name__,
             }),
         )
-        
+
         raise  # Re-raise so RQ marks job as failed
 
 
@@ -580,7 +456,7 @@ def process_ingest_job(job_data: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     """Main entry point for worker CLI."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Audio RAG GPU Worker")
     parser.add_argument(
         "--worker-id",
@@ -596,21 +472,21 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Setup logging
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-    
+
     # Load config
     config = QueueConfig()
     if args.config:
         # Load from file if provided
         pass  # TODO: implement config file loading
-    
+
     # Create and start worker
     worker = GPUWorker.from_config(config, worker_id=args.worker_id)
     worker.start()
