@@ -24,6 +24,7 @@ from audio_rag.core.exceptions import (
     TTSError,
     PipelineError,
     GenerationError,
+    RerankingError,
 )
 
 __all__ = [
@@ -49,4 +50,5 @@ __all__ = [
     "TTSError",
     "PipelineError",
     "GenerationError",
+    "RerankingError",
 ]

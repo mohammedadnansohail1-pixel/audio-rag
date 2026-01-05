@@ -12,7 +12,7 @@ class ASRConfig(BaseModel):
     compute_type: Literal["float16", "int8", "float32"] = "float16"
     vad_filter: bool = True
     vad_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    language: str | None = None  # None = auto-detect
+    language: str | None = None
 
 
 class DiarizationConfig(BaseModel):
@@ -28,7 +28,7 @@ class DiarizationConfig(BaseModel):
 class AlignmentConfig(BaseModel):
     """Transcript-diarization alignment configuration."""
     method: Literal["word_level", "segment_level"] = "word_level"
-    use_whisperx: bool = True  # For word-level timestamps
+    use_whisperx: bool = True
 
 
 class ChunkingConfig(BaseModel):
@@ -58,6 +58,16 @@ class RetrievalConfig(BaseModel):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_in_memory: bool = False
+
+
+class RerankingConfig(BaseModel):
+    """Reranking configuration for improving retrieval accuracy."""
+    backend: Literal["bge-reranker", "none"] = "bge-reranker"
+    model: str = "BAAI/bge-reranker-base"  # Already cached, fast
+    device: Literal["cuda", "cpu", "auto"] = "auto"
+    top_k: int = Field(default=5, ge=1, le=50)  # Final results after reranking
+    initial_k: int = Field(default=20, ge=1, le=100)  # Fetch this many first
+    batch_size: int = Field(default=16, ge=1)
 
 
 class GenerationConfig(BaseModel):
@@ -97,6 +107,7 @@ class AudioRAGConfig(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    reranking: RerankingConfig = Field(default_factory=RerankingConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)

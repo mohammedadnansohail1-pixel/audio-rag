@@ -1,4 +1,4 @@
-"""Query pipeline - Query → Retrieve → Generate → Response."""
+"""Query pipeline - Query → Retrieve → Rerank → Generate → Response."""
 
 from pathlib import Path
 from dataclasses import dataclass
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from audio_rag.core import RetrievalResult, PipelineError
 from audio_rag.embeddings import EmbeddingsRegistry
 from audio_rag.retrieval import RetrievalRegistry
+from audio_rag.reranking import RerankerRegistry
 from audio_rag.generation import GeneratorRegistry
 from audio_rag.tts import TTSRegistry
 from audio_rag.resources import ResourceManager
@@ -24,16 +25,21 @@ class QueryResult:
     response_text: str | None = None
     generated_answer: str | None = None
     audio_path: Path | None = None
+    reranked: bool = False  # Whether results were reranked
 
 
 class QueryPipeline:
-    """Pipeline for querying the audio RAG system."""
+    """Pipeline for querying the audio RAG system.
+    
+    Flow: Query → Embed → Retrieve → Rerank → Generate → TTS
+    """
 
     def __init__(self, config: AudioRAGConfig, resource_manager: ResourceManager | None = None):
         self.config = config
         self.resource_manager = resource_manager or ResourceManager(config.resources)
         self._embedder = None
         self._retriever = None
+        self._reranker = None
         self._generator = None
         self._tts = None
         logger.info("QueryPipeline initialized")
@@ -57,6 +63,13 @@ class QueryPipeline:
         return self._retriever
 
     @property
+    def reranker(self):
+        if self._reranker is None:
+            self._reranker = RerankerRegistry.create(
+                self.config.reranking.backend, config=self.config.reranking)
+        return self._reranker
+
+    @property
     def generator(self):
         if self._generator is None:
             self._generator = GeneratorRegistry.create(
@@ -77,33 +90,74 @@ class QueryPipeline:
         collection_name: str | None = None,
         top_k: int | None = None,
         filter_metadata: dict | None = None,
+        enable_reranking: bool = True,
         generate_answer: bool = True,
         generate_audio: bool = False,
         audio_output_path: Path | str | None = None,
     ) -> QueryResult:
-        """Query the audio RAG system."""
+        """Query the audio RAG system.
+        
+        Args:
+            query_text: Natural language query
+            collection_name: Target collection (tenant isolation)
+            top_k: Final number of results (after reranking if enabled)
+            filter_metadata: Optional metadata filter
+            enable_reranking: Whether to rerank results (default: True)
+            generate_answer: Whether to generate LLM answer (default: True)
+            generate_audio: Whether to generate TTS audio
+            audio_output_path: Path for audio output
+            
+        Returns:
+            QueryResult with results, answer, and optional audio
+        """
         resolved_collection = collection_name or self.config.retrieval.collection_name
+        final_top_k = top_k or self.config.reranking.top_k
+        
         logger.info(f"Query: '{query_text[:50]}...' → {resolved_collection}")
 
         try:
-            # Embed query
+            # Step 1: Embed query
             self.resource_manager.ensure_vram(self.embedder.vram_required)
             query_embedding = self.embedder.embed_query(query_text)
 
-            # Retrieve
-            results = self.retriever.search(
-                query_embedding, top_k=top_k,
-                collection_name=resolved_collection,
-                filter_metadata=filter_metadata)
-            logger.info(f"Retrieved {len(results)} results")
+            # Step 2: Retrieve (fetch more if reranking enabled)
+            reranked = False
+            if enable_reranking and self.reranker is not None:
+                # Fetch initial_k for reranking
+                initial_k = self.config.reranking.initial_k
+                results = self.retriever.search(
+                    query_embedding, 
+                    top_k=initial_k,
+                    collection_name=resolved_collection,
+                    filter_metadata=filter_metadata)
+                logger.info(f"Retrieved {len(results)} results for reranking")
+                
+                # Step 3: Rerank
+                if results:
+                    self.resource_manager.ensure_vram(self.reranker.vram_required)
+                    results = self.reranker.rerank(query_text, results, top_k=final_top_k)
+                    reranked = True
+                    logger.info(f"Reranked to top {len(results)}")
+            else:
+                # No reranking - just fetch final top_k
+                results = self.retriever.search(
+                    query_embedding,
+                    top_k=final_top_k,
+                    collection_name=resolved_collection,
+                    filter_metadata=filter_metadata)
+                logger.info(f"Retrieved {len(results)} results (no reranking)")
 
             if not results:
-                return QueryResult(query=query_text, collection_name=resolved_collection, results=[])
+                return QueryResult(
+                    query=query_text, 
+                    collection_name=resolved_collection, 
+                    results=[],
+                    reranked=reranked)
 
-            # Build raw response
+            # Step 4: Build raw response
             response_text = self._build_response(query_text, results)
 
-            # LLM generation
+            # Step 5: LLM generation
             generated_answer = None
             if generate_answer and self.generator is not None:
                 try:
@@ -112,7 +166,7 @@ class QueryPipeline:
                 except Exception as e:
                     logger.warning(f"Generation failed: {e}")
 
-            # TTS
+            # Step 6: TTS
             audio_path = None
             if generate_audio:
                 tts_text = generated_answer or response_text
@@ -127,7 +181,8 @@ class QueryPipeline:
                 results=results,
                 response_text=response_text,
                 generated_answer=generated_answer,
-                audio_path=audio_path)
+                audio_path=audio_path,
+                reranked=reranked)
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
@@ -176,6 +231,8 @@ class QueryPipeline:
     def unload_all(self) -> None:
         if self._embedder and self._embedder.is_loaded:
             self._embedder.unload()
+        if self._reranker and self._reranker.is_loaded:
+            self._reranker.unload()
         if self._tts and self._tts.is_loaded:
             self._tts.unload()
         logger.info("Query pipeline models unloaded")

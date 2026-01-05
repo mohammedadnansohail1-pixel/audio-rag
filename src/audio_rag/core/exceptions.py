@@ -59,3 +59,8 @@ class PipelineError(AudioRAGError):
 class GenerationError(AudioRAGError):
     """LLM answer generation error."""
     pass
+
+
+class RerankingError(AudioRAGError):
+    """Reranking error."""
+    pass
