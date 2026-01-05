@@ -46,7 +46,7 @@ class EmbeddingConfig(BaseModel):
     device: Literal["cuda", "cpu", "auto"] = "auto"
     batch_size: int = Field(default=32, ge=1)
     normalize: bool = True
-    use_sparse: bool = True  # Enable sparse vectors for hybrid search
+    use_sparse: bool = True
 
 
 class RetrievalConfig(BaseModel):
@@ -59,7 +59,6 @@ class RetrievalConfig(BaseModel):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_in_memory: bool = False
-    # Hybrid search weights (must sum to 1.0)
     dense_weight: float = Field(default=0.7, ge=0.0, le=1.0)
     sparse_weight: float = Field(default=0.3, ge=0.0, le=1.0)
 
@@ -72,6 +71,12 @@ class RerankingConfig(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
     initial_k: int = Field(default=20, ge=1, le=100)
     batch_size: int = Field(default=16, ge=1)
+
+
+class ExpansionConfig(BaseModel):
+    """Query expansion configuration (HyDE)."""
+    backend: Literal["hyde", "none"] = "none"  # Disabled by default
+    num_hypotheses: int = Field(default=1, ge=1, le=3)
 
 
 class GenerationConfig(BaseModel):
@@ -112,6 +117,7 @@ class AudioRAGConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     reranking: RerankingConfig = Field(default_factory=RerankingConfig)
+    expansion: ExpansionConfig = Field(default_factory=ExpansionConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)

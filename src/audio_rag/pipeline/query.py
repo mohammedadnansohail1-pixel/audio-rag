@@ -1,4 +1,4 @@
-"""Query pipeline - Query → Retrieve → Rerank → Generate → Response."""
+"""Query pipeline - Query → (HyDE) → Retrieve → Rerank → Generate → Response."""
 
 from pathlib import Path
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from audio_rag.core import RetrievalResult, PipelineError, EmbeddingResult
 from audio_rag.embeddings import EmbeddingsRegistry
 from audio_rag.retrieval import RetrievalRegistry
 from audio_rag.reranking import RerankerRegistry
+from audio_rag.expansion import HyDEExpander
 from audio_rag.generation import GeneratorRegistry
 from audio_rag.tts import TTSRegistry
 from audio_rag.resources import ResourceManager
@@ -26,13 +27,15 @@ class QueryResult:
     generated_answer: str | None = None
     audio_path: Path | None = None
     reranked: bool = False
-    search_type: str = "dense"  # dense, sparse, or hybrid
+    search_type: str = "dense"
+    hyde_used: bool = False
+    expanded_query: str | None = None
 
 
 class QueryPipeline:
     """Pipeline for querying the audio RAG system.
     
-    Flow: Query → Embed → Retrieve (hybrid) → Rerank → Generate → TTS
+    Flow: Query → (HyDE expand) → Embed → Retrieve → Rerank → Generate → TTS
     """
 
     def __init__(self, config: AudioRAGConfig, resource_manager: ResourceManager | None = None):
@@ -41,6 +44,7 @@ class QueryPipeline:
         self._embedder = None
         self._retriever = None
         self._reranker = None
+        self._expander = None
         self._generator = None
         self._tts = None
         logger.info("QueryPipeline initialized")
@@ -70,6 +74,12 @@ class QueryPipeline:
                 self.config.reranking.backend, config=self.config.reranking)
         return self._reranker
 
+    def _get_expander(self) -> HyDEExpander | None:
+        """Get or create HyDE expander."""
+        if self._expander is None:
+            self._expander = HyDEExpander(config=self.config.generation)
+        return self._expander
+
     @property
     def generator(self):
         if self._generator is None:
@@ -92,34 +102,40 @@ class QueryPipeline:
         top_k: int | None = None,
         filter_metadata: dict | None = None,
         search_type: str | None = None,
+        enable_hyde: bool | None = None,
         enable_reranking: bool = True,
         generate_answer: bool = True,
         generate_audio: bool = False,
         audio_output_path: Path | str | None = None,
     ) -> QueryResult:
-        """Query the audio RAG system.
-        
-        Args:
-            query_text: Natural language query
-            collection_name: Target collection (tenant isolation)
-            top_k: Final number of results
-            filter_metadata: Optional metadata filter
-            search_type: Override search type (dense/sparse/hybrid)
-            enable_reranking: Whether to rerank results
-            generate_answer: Whether to generate LLM answer
-            generate_audio: Whether to generate TTS audio
-            audio_output_path: Path for audio output
-        """
+        """Query the audio RAG system."""
         resolved_collection = collection_name or self.config.retrieval.collection_name
         final_top_k = top_k or self.config.reranking.top_k
         search_type = search_type or self.config.retrieval.search_type
         
-        logger.info(f"Query: '{query_text[:50]}...' → {resolved_collection} ({search_type})")
+        # Determine if HyDE should be used
+        use_hyde = enable_hyde if enable_hyde is not None else (self.config.expansion.backend == "hyde")
+        
+        logger.info(f"Query: '{query_text[:50]}...' → {resolved_collection} ({search_type}, hyde={use_hyde})")
 
         try:
-            # Step 1: Embed query (returns EmbeddingResult with dense + sparse)
+            # Step 0: HyDE expansion (optional)
+            expanded_query = None
+            hyde_used = False
+            embed_text = query_text
+            
+            if use_hyde:
+                expander = self._get_expander()
+                if expander is not None and expander.is_available:
+                    expanded_query = expander.expand_single(query_text)
+                    if expanded_query and expanded_query != query_text:
+                        embed_text = expanded_query
+                        hyde_used = True
+                        logger.info(f"HyDE expanded query: {len(expanded_query)} chars")
+
+            # Step 1: Embed query (or expanded query)
             self.resource_manager.ensure_vram(self.embedder.vram_required)
-            query_embedding: EmbeddingResult = self.embedder.embed_query(query_text)
+            query_embedding: EmbeddingResult = self.embedder.embed_query(embed_text)
             
             has_sparse = query_embedding.sparse is not None
             logger.debug(f"Query embedded: dense={len(query_embedding.dense)}, sparse={has_sparse}")
@@ -136,7 +152,7 @@ class QueryPipeline:
                     search_type=search_type)
                 logger.info(f"Retrieved {len(results)} results for reranking")
                 
-                # Step 3: Rerank
+                # Step 3: Rerank (use original query, not expanded)
                 if results:
                     self.resource_manager.ensure_vram(self.reranker.vram_required)
                     results = self.reranker.rerank(query_text, results, top_k=final_top_k)
@@ -157,12 +173,14 @@ class QueryPipeline:
                     collection_name=resolved_collection, 
                     results=[],
                     reranked=reranked,
-                    search_type=search_type)
+                    search_type=search_type,
+                    hyde_used=hyde_used,
+                    expanded_query=expanded_query)
 
             # Step 4: Build raw response
             response_text = self._build_response(query_text, results)
 
-            # Step 5: LLM generation
+            # Step 5: LLM generation (use original query)
             generated_answer = None
             if generate_answer and self.generator is not None:
                 try:
@@ -188,7 +206,9 @@ class QueryPipeline:
                 generated_answer=generated_answer,
                 audio_path=audio_path,
                 reranked=reranked,
-                search_type=search_type)
+                search_type=search_type,
+                hyde_used=hyde_used,
+                expanded_query=expanded_query)
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
