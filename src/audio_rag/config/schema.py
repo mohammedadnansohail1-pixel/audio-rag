@@ -34,9 +34,9 @@ class AlignmentConfig(BaseModel):
 class ChunkingConfig(BaseModel):
     """Chunking strategy configuration."""
     strategy: Literal["speaker_turn", "semantic", "fixed"] = "speaker_turn"
-    max_tokens: int = Field(default=500, ge=50, le=2000)
+    max_tokens: int = Field(default=256, ge=50, le=2000)
     overlap_tokens: int = Field(default=50, ge=0)
-    min_chunk_tokens: int = Field(default=50, ge=1)  # Allow 1 for testing
+    min_chunk_tokens: int = Field(default=30, ge=1)
 
 
 class EmbeddingConfig(BaseModel):
@@ -55,11 +55,20 @@ class RetrievalConfig(BaseModel):
     search_type: Literal["dense", "sparse", "hybrid"] = "hybrid"
     top_k: int = Field(default=5, ge=1, le=100)
     score_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
-    
-    # Qdrant connection
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    qdrant_in_memory: bool = False  # True for testing
+    qdrant_in_memory: bool = False
+
+
+class GenerationConfig(BaseModel):
+    """LLM answer generation configuration."""
+    backend: Literal["ollama", "none"] = "ollama"
+    model: str = "llama3.2:3b"
+    base_url: str = "http://localhost:11434"
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=1024, ge=1, le=8192)
+    timeout: float = Field(default=60.0, ge=1.0)
+    fallback_models: list[str] = Field(default_factory=lambda: ["llama3.1:8b", "mistral:7b"])
 
 
 class TTSConfig(BaseModel):
@@ -88,10 +97,9 @@ class AudioRAGConfig(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    generation: GenerationConfig = Field(default_factory=GenerationConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
-    
-    # Global settings
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     data_dir: str = "./data"
     cache_dir: str = "./cache"

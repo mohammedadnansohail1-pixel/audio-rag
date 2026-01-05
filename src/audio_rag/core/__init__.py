@@ -1,5 +1,4 @@
 """Core components: registry, base classes, exceptions."""
-
 from audio_rag.core.registry import Registry
 from audio_rag.core.base import (
     TranscriptSegment,
@@ -24,23 +23,20 @@ from audio_rag.core.exceptions import (
     RetrievalError,
     TTSError,
     PipelineError,
+    GenerationError,
 )
 
 __all__ = [
-    # Registry
     "Registry",
-    # Data classes
     "TranscriptSegment",
     "AudioChunk",
     "RetrievalResult",
-    # Base classes
     "BaseASR",
     "BaseDiarizer",
     "BaseChunker",
     "BaseEmbedder",
     "BaseRetriever",
     "BaseTTS",
-    # Exceptions
     "AudioRAGError",
     "ConfigError",
     "RegistryError",
@@ -52,4 +48,5 @@ __all__ = [
     "RetrievalError",
     "TTSError",
     "PipelineError",
+    "GenerationError",
 ]

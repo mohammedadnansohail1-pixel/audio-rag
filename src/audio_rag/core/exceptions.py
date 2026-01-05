@@ -54,3 +54,8 @@ class TTSError(AudioRAGError):
 class PipelineError(AudioRAGError):
     """Pipeline orchestration error."""
     pass
+
+
+class GenerationError(AudioRAGError):
+    """LLM answer generation error."""
+    pass
