@@ -39,6 +39,12 @@ class ChunkingConfig(BaseModel):
     min_chunk_tokens: int = Field(default=30, ge=1)
 
 
+class ContextualConfig(BaseModel):
+    """Contextual retrieval configuration."""
+    enabled: bool = False  # Disabled by default (requires re-indexing)
+    window_size: int = Field(default=1, ge=0, le=3)  # Surrounding chunks to consider
+
+
 class EmbeddingConfig(BaseModel):
     """Embedding model configuration."""
     backend: Literal["bge-m3", "multilingual-e5"] = "bge-m3"
@@ -75,7 +81,7 @@ class RerankingConfig(BaseModel):
 
 class ExpansionConfig(BaseModel):
     """Query expansion configuration (HyDE)."""
-    backend: Literal["hyde", "none"] = "none"  # Disabled by default
+    backend: Literal["hyde", "none"] = "none"
     num_hypotheses: int = Field(default=1, ge=1, le=3)
 
 
@@ -114,6 +120,7 @@ class AudioRAGConfig(BaseModel):
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     alignment: AlignmentConfig = Field(default_factory=AlignmentConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    contextual: ContextualConfig = Field(default_factory=ContextualConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     reranking: RerankingConfig = Field(default_factory=RerankingConfig)

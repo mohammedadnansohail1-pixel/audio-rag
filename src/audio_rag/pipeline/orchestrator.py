@@ -80,6 +80,7 @@ class AudioRAG:
         collection_name: str | None = None,
         metadata: dict | None = None,
         enable_diarization: bool = True,
+        enable_contextual: bool | None = None,
         language: str | None = None,
     ) -> IngestionResult:
         return self.ingestion_pipeline.ingest(
@@ -87,6 +88,7 @@ class AudioRAG:
             collection_name=collection_name,
             metadata=metadata,
             enable_diarization=enable_diarization,
+            enable_contextual=enable_contextual,
             language=language)
 
     def ingest_batch(
@@ -95,6 +97,7 @@ class AudioRAG:
         collection_name: str | None = None,
         metadata: dict | None = None,
         enable_diarization: bool = True,
+        enable_contextual: bool | None = None,
         language: str | None = None,
     ) -> list[IngestionResult]:
         results = []
@@ -104,7 +107,7 @@ class AudioRAG:
                 result = self.ingest(
                     audio_path=path, collection_name=collection_name,
                     metadata=metadata, enable_diarization=enable_diarization,
-                    language=language)
+                    enable_contextual=enable_contextual, language=language)
                 results.append(result)
             except Exception as e:
                 logger.error(f"Failed to ingest {path}: {e}")
@@ -159,6 +162,7 @@ class AudioRAG:
                 "retrieval_search_type": self.config.retrieval.search_type,
                 "reranking_backend": self.config.reranking.backend,
                 "expansion_backend": self.config.expansion.backend,
+                "contextual_enabled": self.config.contextual.enabled,
                 "generation_backend": self.config.generation.backend,
                 "generation_model": self.config.generation.model,
                 "tts_backend": self.config.tts.backend,
