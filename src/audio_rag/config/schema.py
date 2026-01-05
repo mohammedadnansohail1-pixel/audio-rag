@@ -46,6 +46,7 @@ class EmbeddingConfig(BaseModel):
     device: Literal["cuda", "cpu", "auto"] = "auto"
     batch_size: int = Field(default=32, ge=1)
     normalize: bool = True
+    use_sparse: bool = True  # Enable sparse vectors for hybrid search
 
 
 class RetrievalConfig(BaseModel):
@@ -58,15 +59,18 @@ class RetrievalConfig(BaseModel):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_in_memory: bool = False
+    # Hybrid search weights (must sum to 1.0)
+    dense_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    sparse_weight: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
 class RerankingConfig(BaseModel):
     """Reranking configuration for improving retrieval accuracy."""
     backend: Literal["bge-reranker", "none"] = "bge-reranker"
-    model: str = "BAAI/bge-reranker-base"  # Already cached, fast
+    model: str = "BAAI/bge-reranker-base"
     device: Literal["cuda", "cpu", "auto"] = "auto"
-    top_k: int = Field(default=5, ge=1, le=50)  # Final results after reranking
-    initial_k: int = Field(default=20, ge=1, le=100)  # Fetch this many first
+    top_k: int = Field(default=5, ge=1, le=50)
+    initial_k: int = Field(default=20, ge=1, le=100)
     batch_size: int = Field(default=16, ge=1)
 
 

@@ -3,6 +3,8 @@ from audio_rag.core.registry import Registry
 from audio_rag.core.base import (
     TranscriptSegment,
     AudioChunk,
+    SparseVector,
+    EmbeddingResult,
     RetrievalResult,
     BaseASR,
     BaseDiarizer,
@@ -31,6 +33,8 @@ __all__ = [
     "Registry",
     "TranscriptSegment",
     "AudioChunk",
+    "SparseVector",
+    "EmbeddingResult",
     "RetrievalResult",
     "BaseASR",
     "BaseDiarizer",

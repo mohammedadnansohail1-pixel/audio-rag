@@ -3,7 +3,7 @@
 from pathlib import Path
 from dataclasses import dataclass
 
-from audio_rag.core import RetrievalResult, PipelineError
+from audio_rag.core import RetrievalResult, PipelineError, EmbeddingResult
 from audio_rag.embeddings import EmbeddingsRegistry
 from audio_rag.retrieval import RetrievalRegistry
 from audio_rag.reranking import RerankerRegistry
@@ -25,13 +25,14 @@ class QueryResult:
     response_text: str | None = None
     generated_answer: str | None = None
     audio_path: Path | None = None
-    reranked: bool = False  # Whether results were reranked
+    reranked: bool = False
+    search_type: str = "dense"  # dense, sparse, or hybrid
 
 
 class QueryPipeline:
     """Pipeline for querying the audio RAG system.
     
-    Flow: Query → Embed → Retrieve → Rerank → Generate → TTS
+    Flow: Query → Embed → Retrieve (hybrid) → Rerank → Generate → TTS
     """
 
     def __init__(self, config: AudioRAGConfig, resource_manager: ResourceManager | None = None):
@@ -90,6 +91,7 @@ class QueryPipeline:
         collection_name: str | None = None,
         top_k: int | None = None,
         filter_metadata: dict | None = None,
+        search_type: str | None = None,
         enable_reranking: bool = True,
         generate_answer: bool = True,
         generate_audio: bool = False,
@@ -100,36 +102,38 @@ class QueryPipeline:
         Args:
             query_text: Natural language query
             collection_name: Target collection (tenant isolation)
-            top_k: Final number of results (after reranking if enabled)
+            top_k: Final number of results
             filter_metadata: Optional metadata filter
-            enable_reranking: Whether to rerank results (default: True)
-            generate_answer: Whether to generate LLM answer (default: True)
+            search_type: Override search type (dense/sparse/hybrid)
+            enable_reranking: Whether to rerank results
+            generate_answer: Whether to generate LLM answer
             generate_audio: Whether to generate TTS audio
             audio_output_path: Path for audio output
-            
-        Returns:
-            QueryResult with results, answer, and optional audio
         """
         resolved_collection = collection_name or self.config.retrieval.collection_name
         final_top_k = top_k or self.config.reranking.top_k
+        search_type = search_type or self.config.retrieval.search_type
         
-        logger.info(f"Query: '{query_text[:50]}...' → {resolved_collection}")
+        logger.info(f"Query: '{query_text[:50]}...' → {resolved_collection} ({search_type})")
 
         try:
-            # Step 1: Embed query
+            # Step 1: Embed query (returns EmbeddingResult with dense + sparse)
             self.resource_manager.ensure_vram(self.embedder.vram_required)
-            query_embedding = self.embedder.embed_query(query_text)
+            query_embedding: EmbeddingResult = self.embedder.embed_query(query_text)
+            
+            has_sparse = query_embedding.sparse is not None
+            logger.debug(f"Query embedded: dense={len(query_embedding.dense)}, sparse={has_sparse}")
 
-            # Step 2: Retrieve (fetch more if reranking enabled)
+            # Step 2: Retrieve
             reranked = False
             if enable_reranking and self.reranker is not None:
-                # Fetch initial_k for reranking
                 initial_k = self.config.reranking.initial_k
                 results = self.retriever.search(
                     query_embedding, 
                     top_k=initial_k,
                     collection_name=resolved_collection,
-                    filter_metadata=filter_metadata)
+                    filter_metadata=filter_metadata,
+                    search_type=search_type)
                 logger.info(f"Retrieved {len(results)} results for reranking")
                 
                 # Step 3: Rerank
@@ -139,20 +143,21 @@ class QueryPipeline:
                     reranked = True
                     logger.info(f"Reranked to top {len(results)}")
             else:
-                # No reranking - just fetch final top_k
                 results = self.retriever.search(
                     query_embedding,
                     top_k=final_top_k,
                     collection_name=resolved_collection,
-                    filter_metadata=filter_metadata)
-                logger.info(f"Retrieved {len(results)} results (no reranking)")
+                    filter_metadata=filter_metadata,
+                    search_type=search_type)
+                logger.info(f"Retrieved {len(results)} results")
 
             if not results:
                 return QueryResult(
                     query=query_text, 
                     collection_name=resolved_collection, 
                     results=[],
-                    reranked=reranked)
+                    reranked=reranked,
+                    search_type=search_type)
 
             # Step 4: Build raw response
             response_text = self._build_response(query_text, results)
@@ -182,7 +187,8 @@ class QueryPipeline:
                 response_text=response_text,
                 generated_answer=generated_answer,
                 audio_path=audio_path,
-                reranked=reranked)
+                reranked=reranked,
+                search_type=search_type)
 
         except Exception as e:
             logger.error(f"Query failed: {e}")
