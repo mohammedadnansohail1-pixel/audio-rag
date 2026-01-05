@@ -1,222 +1,248 @@
-"""Transcript-diarization alignment algorithms."""
+"""ASR-Diarization alignment module.
+
+Aligns word-level timestamps from ASR with speaker segments from diarization.
+
+Research-backed implementation based on:
+- Standard orchestration algorithm (arXiv 2409.00151)
+- WhisperX alignment approach (m-bain/whisperX)
+- DiarizationLM reconciliation (Interspeech 2024)
+"""
 
 from dataclasses import dataclass
-from audio_rag.core import TranscriptSegment, AlignmentError
-from audio_rag.utils import get_logger, timed
+
+from audio_rag.core import TranscriptSegment
+from audio_rag.utils import get_logger
 
 logger = get_logger(__name__)
 
 
 @dataclass
 class AlignedWord:
-    """A word with timing and speaker attribution."""
+    """A word with speaker attribution."""
+
     word: str
     start: float
     end: float
-    speaker: str | None = None
+    speaker: str | None
 
 
 def align_words_to_speakers(
     words: list[dict],
     diarization_segments: list[TranscriptSegment],
+    method: str = "overlap",
+    tolerance: float = 0.5,
 ) -> list[AlignedWord]:
     """Align word-level timestamps with speaker diarization.
-    
-    Uses midpoint alignment: assigns each word to the speaker
-    active at the word's midpoint.
-    
+
+    Implements the standard orchestration algorithm from literature:
+    1. If word overlaps with speaker segment -> assign speaker with max overlap
+    2. If no overlap -> assign speaker with smallest temporal distance (within tolerance)
+
     Args:
         words: List of {"word": str, "start": float, "end": float}
         diarization_segments: Speaker segments from diarization
-        
+        method: "overlap" (default, research-backed) or "midpoint" (legacy)
+        tolerance: Max gap (seconds) to search for nearest speaker when no overlap
+
     Returns:
         List of AlignedWord with speaker attribution
     """
     if not words:
         return []
-    
+
     if not diarization_segments:
         logger.warning("No diarization segments, words will have no speaker")
         return [
             AlignedWord(word=w["word"], start=w["start"], end=w["end"], speaker=None)
             for w in words
         ]
-    
+
     aligned = []
-    
+
     for word_data in words:
-        word_mid = (word_data["start"] + word_data["end"]) / 2
+        word_start = word_data["start"]
+        word_end = word_data["end"]
         speaker = None
-        
-        # Find speaker active at word midpoint
-        for seg in diarization_segments:
-            if seg.start <= word_mid <= seg.end:
-                speaker = seg.speaker
-                break
-        
+
+        if method == "overlap":
+            # Step 1: Find speaker with maximum overlap (standard orchestration)
+            max_overlap = 0.0
+            for seg in diarization_segments:
+                overlap_start = max(word_start, seg.start)
+                overlap_end = min(word_end, seg.end)
+                overlap = max(0.0, overlap_end - overlap_start)
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    speaker = seg.speaker
+
+            # Step 2: Fallback - find nearest segment if no overlap (within tolerance)
+            if speaker is None and tolerance > 0:
+                word_mid = (word_start + word_end) / 2
+                min_distance = float("inf")
+                for seg in diarization_segments:
+                    # Calculate distance to segment
+                    if word_mid < seg.start:
+                        dist = seg.start - word_mid
+                    elif word_mid > seg.end:
+                        dist = word_mid - seg.end
+                    else:
+                        dist = 0  # Inside segment (shouldn't happen if overlap failed)
+                    if dist < min_distance and dist <= tolerance:
+                        min_distance = dist
+                        speaker = seg.speaker
+        else:
+            # Midpoint method (legacy, less accurate with NeMo gaps)
+            word_mid = (word_start + word_end) / 2
+            for seg in diarization_segments:
+                if seg.start <= word_mid <= seg.end:
+                    speaker = seg.speaker
+                    break
+
         aligned.append(
             AlignedWord(
                 word=word_data["word"],
-                start=word_data["start"],
-                end=word_data["end"],
+                start=word_start,
+                end=word_end,
                 speaker=speaker,
             )
         )
-    
+
     # Log alignment stats
     assigned = sum(1 for w in aligned if w.speaker is not None)
-    logger.info(f"Aligned {assigned}/{len(aligned)} words to speakers")
-    
+    pct = (assigned / len(aligned) * 100) if aligned else 0
+    logger.info(
+        f"Aligned {assigned}/{len(aligned)} words ({pct:.1f}%) to speakers "
+        f"[method={method}, tolerance={tolerance}s]"
+    )
+
     return aligned
 
 
-def align_segments_to_speakers(
-    transcript_segments: list[TranscriptSegment],
-    diarization_segments: list[TranscriptSegment],
-    method: str = "overlap",
-) -> list[TranscriptSegment]:
-    """Align transcript segments with speaker diarization.
-    
-    Args:
-        transcript_segments: Segments from ASR (with text, no speaker)
-        diarization_segments: Segments from diarization (with speaker, no text)
-        method: Alignment method - 'overlap' (max overlap) or 'midpoint'
-        
-    Returns:
-        Transcript segments with speaker attribution
-    """
-    if not transcript_segments:
-        return []
-    
-    if not diarization_segments:
-        logger.warning("No diarization segments, transcripts will have no speaker")
-        return transcript_segments
-    
-    aligned = []
-    
-    for seg in transcript_segments:
-        if method == "midpoint":
-            speaker = _find_speaker_at_midpoint(seg, diarization_segments)
-        else:  # overlap
-            speaker = _find_speaker_by_overlap(seg, diarization_segments)
-        
-        aligned.append(
-            TranscriptSegment(
-                text=seg.text,
-                start=seg.start,
-                end=seg.end,
-                speaker=speaker,
-                confidence=seg.confidence,
-                language=seg.language,
-            )
-        )
-    
-    # Log alignment stats
-    assigned = sum(1 for s in aligned if s.speaker is not None)
-    logger.info(f"Aligned {assigned}/{len(aligned)} segments to speakers")
-    
-    return aligned
-
-
-def _find_speaker_at_midpoint(
-    segment: TranscriptSegment,
-    diarization_segments: list[TranscriptSegment],
-) -> str | None:
-    """Find speaker active at segment midpoint."""
-    midpoint = (segment.start + segment.end) / 2
-    
-    for diar_seg in diarization_segments:
-        if diar_seg.start <= midpoint <= diar_seg.end:
-            return diar_seg.speaker
-    
-    return None
-
-
-def _find_speaker_by_overlap(
-    segment: TranscriptSegment,
-    diarization_segments: list[TranscriptSegment],
-) -> str | None:
-    """Find speaker with maximum overlap with segment."""
-    max_overlap = 0.0
-    best_speaker = None
-    
-    for diar_seg in diarization_segments:
-        # Calculate overlap
-        overlap_start = max(segment.start, diar_seg.start)
-        overlap_end = min(segment.end, diar_seg.end)
-        overlap = max(0.0, overlap_end - overlap_start)
-        
-        if overlap > max_overlap:
-            max_overlap = overlap
-            best_speaker = diar_seg.speaker
-    
-    return best_speaker
-
-
-@timed
 def build_speaker_transcript(
-    words: list[AlignedWord],
+    aligned_words: list[AlignedWord],
     min_gap_seconds: float = 1.0,
+    propagate_speaker: bool = True,
 ) -> list[TranscriptSegment]:
-    """Build transcript segments grouped by speaker turns.
-    
-    Groups consecutive words by speaker, creating new segments
-    when speaker changes or there's a significant gap.
-    
+    """Build transcript segments from aligned words.
+
+    Groups consecutive words by speaker, splitting on speaker changes
+    or significant time gaps.
+
     Args:
-        words: Aligned words with speaker attribution
-        min_gap_seconds: Gap threshold to force new segment
-        
+        aligned_words: Words with speaker attribution
+        min_gap_seconds: Gap threshold to force segment split
+        propagate_speaker: If True, fill None speakers from neighbors
+
     Returns:
-        List of transcript segments grouped by speaker turn
+        List of TranscriptSegment with speaker attribution
+    """
+    if not aligned_words:
+        return []
+
+    # Step 1: Propagate speakers to fill None gaps (forward then backward fill)
+    if propagate_speaker:
+        aligned_words = _propagate_speakers(aligned_words)
+
+    segments = []
+    current_words: list[AlignedWord] = []
+    current_speaker: str | None = None
+
+    for word in aligned_words:
+        # Check if we should start a new segment
+        should_split = False
+
+        if not current_words:
+            # First word
+            should_split = False
+        elif word.speaker != current_speaker:
+            # Speaker changed
+            should_split = True
+        elif word.start - current_words[-1].end > min_gap_seconds:
+            # Time gap too large
+            should_split = True
+
+        if should_split and current_words:
+            # Finalize current segment
+            segments.append(_words_to_segment(current_words, current_speaker))
+            current_words = []
+
+        current_words.append(word)
+        current_speaker = word.speaker
+
+    # Don't forget the last segment
+    if current_words:
+        segments.append(_words_to_segment(current_words, current_speaker))
+
+    logger.info(
+        f"Built {len(segments)} transcript segments from {len(aligned_words)} words"
+    )
+
+    return segments
+
+
+def _propagate_speakers(words: list[AlignedWord]) -> list[AlignedWord]:
+    """Fill None speakers by propagating from neighbors.
+
+    Strategy:
+    1. Forward fill: If word has None speaker, use previous word's speaker
+    2. Backward fill: If first words are None, use next non-None speaker
     """
     if not words:
-        return []
-    
-    segments = []
-    current_speaker = words[0].speaker
-    current_words = [words[0].word]
-    current_start = words[0].start
-    current_end = words[0].end
-    
-    for i, word in enumerate(words[1:], 1):
-        prev_word = words[i - 1]
-        gap = word.start - prev_word.end
-        speaker_changed = word.speaker != current_speaker
-        large_gap = gap > min_gap_seconds
-        
-        # Start new segment if speaker changes or large gap
-        if speaker_changed or large_gap:
-            # Save current segment
-            segments.append(
-                TranscriptSegment(
-                    text=" ".join(current_words),
-                    start=current_start,
-                    end=current_end,
-                    speaker=current_speaker,
+        return words
+
+    result = list(words)  # Copy to avoid mutating original
+
+    # Forward fill
+    last_speaker = None
+    for i, word in enumerate(result):
+        if word.speaker is not None:
+            last_speaker = word.speaker
+        elif last_speaker is not None:
+            result[i] = AlignedWord(
+                word=word.word,
+                start=word.start,
+                end=word.end,
+                speaker=last_speaker,
+            )
+
+    # Backward fill (for words at the start with None)
+    first_speaker = None
+    for word in result:
+        if word.speaker is not None:
+            first_speaker = word.speaker
+            break
+
+    if first_speaker is not None:
+        for i, word in enumerate(result):
+            if word.speaker is None:
+                result[i] = AlignedWord(
+                    word=word.word,
+                    start=word.start,
+                    end=word.end,
+                    speaker=first_speaker,
                 )
-            )
-            
-            # Start new segment
-            current_speaker = word.speaker
-            current_words = [word.word]
-            current_start = word.start
-            current_end = word.end
-        else:
-            # Continue current segment
-            current_words.append(word.word)
-            current_end = word.end
-    
-    # Don't forget last segment
-    if current_words:
-        segments.append(
-            TranscriptSegment(
-                text=" ".join(current_words),
-                start=current_start,
-                end=current_end,
-                speaker=current_speaker,
-            )
+            else:
+                break  # Stop once we hit a non-None speaker
+
+    # Log propagation stats
+    original_none = sum(1 for w in words if w.speaker is None)
+    final_none = sum(1 for w in result if w.speaker is None)
+    if original_none > 0:
+        logger.debug(
+            f"Speaker propagation: {original_none} None -> {final_none} None "
+            f"({original_none - final_none} filled)"
         )
-    
-    logger.info(f"Built {len(segments)} speaker turns from {len(words)} words")
-    return segments
+
+    return result
+
+
+def _words_to_segment(words: list[AlignedWord], speaker: str | None) -> TranscriptSegment:
+    """Convert a list of words to a TranscriptSegment."""
+    text = " ".join(w.word for w in words)
+    return TranscriptSegment(
+        text=text,
+        start=words[0].start,
+        end=words[-1].end,
+        speaker=speaker,
+        language="en",  # Default, could be passed in
+    )

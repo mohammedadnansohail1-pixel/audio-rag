@@ -15,12 +15,6 @@ def estimate_tokens(text: str) -> int:
 
 @ChunkingRegistry.register("speaker_turn")
 class SpeakerTurnChunker(BaseChunker):
-    """Chunk transcript by speaker turns with token limits.
-    
-    Preserves speaker attribution and creates natural conversation chunks.
-    Splits long turns and merges short ones while respecting speaker boundaries.
-    """
-    
     def __init__(self, config: ChunkingConfig):
         self.config = config
         self.max_tokens = config.max_tokens
@@ -30,42 +24,28 @@ class SpeakerTurnChunker(BaseChunker):
             f"SpeakerTurnChunker: max={self.max_tokens}, "
             f"overlap={self.overlap_tokens}, min={self.min_chunk_tokens}"
         )
-    
+
     def chunk(self, segments: list[TranscriptSegment]) -> list[AudioChunk]:
-        """Convert transcript segments into chunks for embedding.
-        
-        Strategy:
-        1. Group consecutive segments by speaker
-        2. Split groups that exceed max_tokens
-        3. Merge small groups if under min_chunk_tokens (same speaker only)
-        4. Add overlap between chunks for context
-        
-        Args:
-            segments: Transcript segments with speaker attribution
-            
-        Returns:
-            List of AudioChunks ready for embedding
-        """
         if not segments:
             return []
-        
-        # Step 1: Group by speaker
+
         speaker_groups = self._group_by_speaker(segments)
         logger.debug(f"Grouped into {len(speaker_groups)} speaker turns")
-        
-        # Step 2: Split large groups
+
         split_groups = []
         for group in speaker_groups:
             split_groups.extend(self._split_if_too_large(group))
         logger.debug(f"After splitting: {len(split_groups)} groups")
-        
-        # Step 3: Convert to AudioChunks with metadata
+
+        merged_groups = self._merge_small_groups(split_groups)
+        logger.debug(f"After merging: {len(merged_groups)} groups")
+
         chunks = []
-        for group in split_groups:
+        for group in merged_groups:
             text = " ".join(seg.text for seg in group)
-            if estimate_tokens(text) < self.min_chunk_tokens:
-                continue  # Skip very small chunks
-            
+            tokens = estimate_tokens(text)
+            if not text.strip():
+                continue
             chunk = AudioChunk(
                 text=text,
                 start=group[0].start,
@@ -75,28 +55,23 @@ class SpeakerTurnChunker(BaseChunker):
                     "segment_count": len(group),
                     "duration": group[-1].end - group[0].start,
                     "language": group[0].language,
+                    "token_estimate": tokens,
                 },
             )
             chunks.append(chunk)
-        
-        # Step 4: Add overlap context
+
         if self.overlap_tokens > 0:
             chunks = self._add_overlap_context(chunks)
-        
+
         logger.info(f"Created {len(chunks)} chunks from {len(segments)} segments")
         return chunks
-    
-    def _group_by_speaker(
-        self, segments: list[TranscriptSegment]
-    ) -> list[list[TranscriptSegment]]:
-        """Group consecutive segments by speaker."""
+
+    def _group_by_speaker(self, segments: list[TranscriptSegment]) -> list[list[TranscriptSegment]]:
         if not segments:
             return []
-        
         groups = []
         current_group = [segments[0]]
         current_speaker = segments[0].speaker
-        
         for seg in segments[1:]:
             if seg.speaker == current_speaker:
                 current_group.append(seg)
@@ -104,68 +79,77 @@ class SpeakerTurnChunker(BaseChunker):
                 groups.append(current_group)
                 current_group = [seg]
                 current_speaker = seg.speaker
-        
         if current_group:
             groups.append(current_group)
-        
         return groups
-    
-    def _split_if_too_large(
-        self, group: list[TranscriptSegment]
-    ) -> list[list[TranscriptSegment]]:
-        """Split a speaker group if it exceeds max_tokens."""
+
+    def _split_if_too_large(self, group: list[TranscriptSegment]) -> list[list[TranscriptSegment]]:
         text = " ".join(seg.text for seg in group)
         if estimate_tokens(text) <= self.max_tokens:
             return [group]
-        
-        # Need to split
         result = []
         current_group = []
         current_tokens = 0
-        
         for seg in group:
             seg_tokens = estimate_tokens(seg.text)
-            
+            if seg_tokens > self.max_tokens and not current_group:
+                result.append([seg])
+                continue
             if current_tokens + seg_tokens > self.max_tokens and current_group:
                 result.append(current_group)
                 current_group = []
                 current_tokens = 0
-            
             current_group.append(seg)
             current_tokens += seg_tokens
-        
         if current_group:
             result.append(current_group)
-        
         return result
-    
+
+    def _merge_small_groups(self, groups: list[list[TranscriptSegment]]) -> list[list[TranscriptSegment]]:
+        if not groups:
+            return []
+        result = []
+        current_merged = list(groups[0])
+        current_speaker = groups[0][0].speaker if groups[0] else None
+        for group in groups[1:]:
+            group_speaker = group[0].speaker if group else None
+            group_text = " ".join(seg.text for seg in group)
+            current_text = " ".join(seg.text for seg in current_merged)
+            combined_tokens = estimate_tokens(current_text + " " + group_text)
+            current_tokens = estimate_tokens(current_text)
+            should_merge = (
+                group_speaker == current_speaker
+                and current_tokens < self.min_chunk_tokens
+                and combined_tokens <= self.max_tokens
+            )
+            if should_merge:
+                current_merged.extend(group)
+            else:
+                result.append(current_merged)
+                current_merged = list(group)
+                current_speaker = group_speaker
+        if current_merged:
+            result.append(current_merged)
+        return result
+
     def _add_overlap_context(self, chunks: list[AudioChunk]) -> list[AudioChunk]:
-        """Add overlap context from previous chunk."""
         if len(chunks) <= 1:
             return chunks
-        
-        result = [chunks[0]]  # First chunk unchanged
-        
+        result = [chunks[0]]
         for i, chunk in enumerate(chunks[1:], 1):
             prev_chunk = chunks[i - 1]
-            
-            # Get last N tokens from previous chunk as context
             prev_words = prev_chunk.text.split()
             overlap_words = []
             token_count = 0
-            
             for word in reversed(prev_words):
                 word_tokens = estimate_tokens(word)
                 if token_count + word_tokens > self.overlap_tokens:
                     break
                 overlap_words.insert(0, word)
                 token_count += word_tokens
-            
             if overlap_words:
-                # Prepend context with marker
                 context = " ".join(overlap_words)
                 new_text = f"[...{context}] {chunk.text}"
-                
                 result.append(
                     AudioChunk(
                         text=new_text,
@@ -177,5 +161,4 @@ class SpeakerTurnChunker(BaseChunker):
                 )
             else:
                 result.append(chunk)
-        
         return result
