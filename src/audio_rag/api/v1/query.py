@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from typing import Literal
 
 from audio_rag.api.deps import get_api_key, rate_limit_dependency
 from audio_rag.api.schemas import ErrorResponse
@@ -14,8 +15,6 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["query"])
 
-
-# Lazy-loaded pipeline (singleton per worker process)
 _query_pipeline: QueryPipeline | None = None
 
 
@@ -28,7 +27,6 @@ def get_query_pipeline() -> QueryPipeline:
     return _query_pipeline
 
 
-# Request/Response schemas
 class QueryRequest(BaseModel):
     """Query request body."""
     query: str = Field(..., min_length=1, max_length=2000, description="Search query text")
@@ -41,6 +39,14 @@ class QueryRequest(BaseModel):
     )
     top_k: int = Field(default=5, ge=1, le=50, description="Number of results to return")
     filter_metadata: dict | None = Field(default=None, description="Optional metadata filter")
+    
+    # New advanced features
+    search_type: Literal["dense", "sparse", "hybrid"] = Field(
+        default="hybrid", description="Search type: dense (semantic), sparse (BM25), or hybrid (RRF fusion)"
+    )
+    enable_hyde: bool = Field(default=False, description="Enable HyDE query expansion")
+    enable_reranking: bool = Field(default=True, description="Enable BGE reranking")
+    generate_answer: bool = Field(default=False, description="Generate LLM answer from context")
     include_context: bool = Field(default=False, description="Include LLM-formatted context")
 
 
@@ -62,6 +68,10 @@ class QueryResponse(BaseModel):
     results: list[ChunkResult]
     result_count: int
     context: str | None = None
+    generated_answer: str | None = None
+    search_type: str
+    reranked: bool
+    hyde_used: bool
 
 
 @router.post(
@@ -75,30 +85,35 @@ class QueryResponse(BaseModel):
         503: {"model": ErrorResponse, "description": "Service unavailable"},
     },
     summary="Search audio content",
-    description="Search ingested audio content using semantic similarity.",
+    description="Search ingested audio content using semantic similarity with advanced RAG features.",
 )
 async def search_audio(
     request: QueryRequest,
     api_key: str = Depends(get_api_key),
     _rate_limit: None = Depends(rate_limit_dependency("query")),
 ) -> QueryResponse:
-    """Search ingested audio content.
-    
-    Performs semantic search across audio transcripts in the specified collection.
-    Returns ranked chunks with speaker attribution and timestamps.
+    """Search ingested audio content with advanced RAG features.
+
+    Features:
+    - Hybrid search (dense + sparse BM25)
+    - HyDE query expansion
+    - BGE reranking
+    - LLM answer generation
     """
     try:
         pipeline = get_query_pipeline()
-        
-        # Execute query
+
         result: QueryResult = pipeline.query(
             query_text=request.query,
             collection_name=request.collection_name,
             top_k=request.top_k,
             filter_metadata=request.filter_metadata,
+            search_type=request.search_type,
+            enable_hyde=request.enable_hyde,
+            enable_reranking=request.enable_reranking,
+            generate_answer=request.generate_answer,
         )
-        
-        # Convert results to response schema
+
         chunks = [
             ChunkResult(
                 text=r.chunk.text,
@@ -111,8 +126,7 @@ async def search_audio(
             )
             for r in result.results
         ]
-        
-        # Optionally include LLM context
+
         context = None
         if request.include_context and result.results:
             context = pipeline.get_context_for_llm(
@@ -121,18 +135,21 @@ async def search_audio(
                 top_k=request.top_k,
                 filter_metadata=request.filter_metadata,
             )
-        
+
         return QueryResponse(
             query=result.query,
             collection_name=result.collection_name,
             results=chunks,
             result_count=len(chunks),
             context=context,
+            generated_answer=result.generated_answer,
+            search_type=result.search_type,
+            reranked=result.reranked,
+            hyde_used=result.hyde_used,
         )
-        
+
     except RetrievalError as e:
         logger.error(f"Retrieval error: {e}")
-        # Check if it's a connection issue
         if "connect" in str(e).lower() or "connection" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -142,14 +159,14 @@ async def search_audio(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {e}",
         )
-        
+
     except PipelineError as e:
         logger.error(f"Pipeline error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query pipeline error: {e}",
         )
-        
+
     except Exception as e:
         logger.exception(f"Unexpected error in query: {e}")
         raise HTTPException(
@@ -174,20 +191,13 @@ async def get_collection_count(
     """Get the number of chunks in a collection."""
     try:
         pipeline = get_query_pipeline()
-        
-        # Check if collection exists
         if not pipeline.retriever.collection_exists(collection_name):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Collection '{collection_name}' not found",
             )
-        
         count = pipeline.retriever.count(collection_name)
-        return {
-            "collection_name": collection_name,
-            "count": count,
-        }
-        
+        return {"collection_name": collection_name, "count": count}
     except HTTPException:
         raise
     except RetrievalError as e:
@@ -214,22 +224,14 @@ async def delete_collection(
     """Delete an entire collection and all its data."""
     try:
         pipeline = get_query_pipeline()
-        
-        # Check if collection exists
         if not pipeline.retriever.collection_exists(collection_name):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Collection '{collection_name}' not found",
             )
-        
         pipeline.retriever.delete_collection(collection_name)
         logger.info(f"Deleted collection: {collection_name}")
-        
-        return {
-            "message": f"Collection '{collection_name}' deleted",
-            "collection_name": collection_name,
-        }
-        
+        return {"message": f"Collection '{collection_name}' deleted", "collection_name": collection_name}
     except HTTPException:
         raise
     except RetrievalError as e:
