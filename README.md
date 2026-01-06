@@ -5,7 +5,7 @@ Production-grade Retrieval-Augmented Generation system for audio content. Ingest
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🌟 Features
+## ✨ Features
 
 | Feature | Description |
 |---------|-------------|
@@ -16,74 +16,62 @@ Production-grade Retrieval-Augmented Generation system for audio content. Ingest
 | **Reranking** | BGE CrossEncoder for relevance scoring |
 | **HyDE** | Query expansion via hypothetical documents |
 | **Answer Generation** | Ollama LLM synthesis with citations |
+| **Real-time Streaming** | WebSocket API for live transcription |
+| **Web UI** | React dashboard for search, upload, streaming |
 | **Multi-tenant** | Collection-based isolation per organization |
-| **Production API** | FastAPI with rate limiting, auth, Redis queue |
+| **Kubernetes** | Helm charts for production deployment |
 
 ## 📊 Benchmarks
 
-### Retrieval Quality (CS229 Lecture Dataset)
+### Retrieval Quality
 
-| Configuration | Precision@K | MRR | NDCG | Hit Rate | Latency |
-|--------------|-------------|-----|------|----------|---------|
-| Dense only | 0.425 | 0.650 | 0.652 | 0.750 | 2956ms |
-| Hybrid (Dense + BM25) | 0.425 | 0.650 | 0.652 | 0.750 | 1824ms |
-| **Contextual + Hybrid** | **0.625** | **0.875** | **0.942** | **0.875** | **2876ms** |
-| Contextual + HyDE | 0.675 | 0.875 | 0.990 | 0.875 | 4718ms |
+| Configuration | Precision@5 | MRR | NDCG |
+|--------------|-------------|-----|------|
+| Dense only | 0.425 | 0.650 | 0.652 |
+| **Contextual + Hybrid** | **0.625** | **0.875** | **0.942** |
 
-### Production Performance
+### Performance
 
 | Metric | Value |
 |--------|-------|
-| Query latency (warm) | 141ms |
-| Throughput | 7.1 queries/sec |
-| Concurrent users | 22+ (100% success) |
-| Model load time | 4.8s (one-time) |
+| Query latency | 141ms |
+| Throughput | 7.1 qps |
+| Streaming latency | 5-7 seconds |
+| Real-time factor | 0.66x |
 
 ## 🚀 Quick Start
 
-### Installation
-```bash
-# Clone repository
-git clone https://github.com/yourusername/audio-rag.git
-cd audio-rag
-
-# Install with uv (recommended)
-uv sync
-
-# Or with pip
-pip install -e .
-
-# Set CUDA path (WSL2/Linux)
-export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
-```
-
 ### Prerequisites
 ```bash
-# Start Qdrant (vector store)
+# Start infrastructure
 docker run -d -p 6333:6333 qdrant/qdrant
-
-# Start Redis (job queue)
 docker run -d -p 6379:6379 redis
-
-# Pull Ollama model
 ollama pull llama3.2:latest
 ```
 
-### Basic Usage
+### Installation
+```bash
+git clone https://github.com/mohammedadnansohail1-pixel/audio-rag.git
+cd audio-rag
+uv sync
+
+# Set CUDA path (Linux/WSL2)
+export LD_LIBRARY_PATH="$PWD/.venv/lib/python3.11/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
+```
+
+### Usage
 ```python
-from audio_rag.pipeline import AudioRAG
-from audio_rag.config import AudioRAGConfig
+from audio_rag import AudioRAG, AudioRAGConfig
 
 # Initialize
 config = AudioRAGConfig()
-config.retrieval.collection_name = 'my_lectures'
 rag = AudioRAG(config)
 
-# Ingest audio (with contextual for best quality)
+# Ingest (with contextual for best quality)
 result = rag.ingest('lecture.wav', enable_contextual=True)
-print(f"Ingested {result.num_chunks} chunks, {len(result.speakers)} speakers")
+print(f"Indexed {result.num_chunks} chunks")
 
-# Query
+# Search
 result = rag.query(
     'What is gradient descent?',
     search_type='hybrid',
@@ -93,34 +81,28 @@ result = rag.query(
 print(result.generated_answer)
 ```
 
-### CLI Usage
+### Web UI
 ```bash
-# Ingest
-uv run python -m audio_rag.cli ingest lecture.mp3 --collection cs229
-
-# Query
-uv run python -m audio_rag.cli query "What is RAG?" --collection cs229
-
-# Status
-uv run python -m audio_rag.cli status
+cd frontend && npm install && npm run dev
+# Open http://localhost:3000
 ```
 
-### API Usage
+### API
 ```bash
-# Start server
 uvicorn audio_rag.api:create_app --factory --port 8000
 
-# Query endpoint
+# Query
 curl -X POST http://localhost:8000/api/v1/query \
   -H "X-API-Key: dev-key-12345" \
   -H "Content-Type: application/json" \
-  -d '{
-    "query": "What is machine learning?",
-    "collection_name": "cs229",
-    "search_type": "hybrid",
-    "enable_reranking": true,
-    "generate_answer": true
-  }'
+  -d '{"query": "What is ML?", "generate_answer": true}'
+```
+
+### Real-time Streaming
+```javascript
+const ws = new WebSocket('ws://localhost:8000/api/v1/ws/transcribe');
+ws.onmessage = (e) => console.log(JSON.parse(e.data).text);
+// Send audio chunks from microphone...
 ```
 
 ## 🏗️ Architecture
@@ -128,156 +110,89 @@ curl -X POST http://localhost:8000/api/v1/query \
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         INGESTION PIPELINE                          │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Audio → Whisper → NeMo → Alignment → Chunking → Context → Embed   │
-│    │       ASR    Diarize   Speaker     Split      LLM     BGE-M3  │
-│    │                        Labels      256tok    Context   Dense   │
-│    │                                              (Ollama)  +Sparse │
-│    └────────────────────────────────────────────────────────────────┤
-│                                                              Qdrant │
+│  Audio → Whisper → NeMo → Align → Chunk → Context → BGE-M3 → Qdrant│
+│           ASR     Diarize  Speaker  256tok   LLM    Dense+Sparse    │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          QUERY PIPELINE                             │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Query → (HyDE) → Embed → Hybrid Search → Rerank → Generate        │
-│    │     Expand   BGE-M3   Dense+BM25     BGE-CE   Ollama          │
-│    │     Ollama           RRF Fusion                                │
+│  Query → (HyDE) → BGE-M3 → Hybrid Search → Rerank → Ollama → Answer │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## ⚙️ Configuration
-```yaml
-# configs/base.yaml
-asr:
-  backend: "faster-whisper"
-  model_size: "large-v3"
-  device: "auto"
+## 📦 Deployment
 
-diarization:
-  backend: "nemo"
-  device: "auto"
-
-chunking:
-  strategy: "speaker_turn"
-  max_tokens: 256
-  min_chunk_tokens: 30
-
-contextual:
-  enabled: true           # Add LLM context to chunks
-  window_size: 1          # Surrounding chunks for context
-
-embedding:
-  backend: "bge-m3"
-  model: "BAAI/bge-m3"
-  use_sparse: true        # Enable BM25 sparse vectors
-
-retrieval:
-  backend: "qdrant"
-  search_type: "hybrid"   # dense, sparse, or hybrid
-  top_k: 5
-
-reranking:
-  backend: "bge-reranker"
-  model: "BAAI/bge-reranker-base"
-  initial_k: 20           # Retrieve 20, rerank to top_k
-
-expansion:
-  backend: "none"         # Set to "hyde" to enable
-
-generation:
-  backend: "ollama"
-  model: "llama3.2:latest"
+### Docker Compose
+```bash
+docker compose --profile gpu up -d
 ```
+
+### Kubernetes
+```bash
+helm install audio-rag ./k8s/helm/audio-rag -n audio-rag --create-namespace
+```
+
+See [k8s/README.md](k8s/README.md) for production deployment guide.
 
 ## 📁 Project Structure
 ```
 audio-rag/
-├── src/audio_rag/
-│   ├── asr/              # Speech recognition (Whisper)
-│   ├── diarization/      # Speaker identification (NeMo)
-│   ├── alignment/        # Word-to-speaker alignment
-│   ├── chunking/         # Text chunking strategies
+├── src/audio_rag/        # Core Python package
+│   ├── asr/              # Whisper + streaming
+│   ├── diarization/      # NeMo speaker ID
 │   ├── contextual/       # LLM context generation
-│   ├── embeddings/       # BGE-M3 dense+sparse
 │   ├── retrieval/        # Qdrant hybrid search
 │   ├── reranking/        # BGE CrossEncoder
-│   ├── expansion/        # HyDE query expansion
-│   ├── generation/       # Ollama answer synthesis
-│   ├── evaluation/       # RAGAS, NLI metrics
+│   ├── generation/       # Ollama answers
+│   ├── evaluation/       # RAGAS metrics
 │   ├── pipeline/         # Orchestration
-│   ├── queue/            # Redis job queue
 │   ├── api/              # FastAPI endpoints
-│   └── config/           # Pydantic schemas
-├── configs/              # YAML configurations
-├── tests/                # Unit & integration tests
-└── docs/                 # Documentation
+│   └── queue/            # Redis job queue
+├── frontend/             # React web UI
+├── k8s/helm/             # Kubernetes Helm charts
+├── docs/                 # Documentation
+└── tests/                # Unit + integration tests
 ```
 
-## 🔬 Evaluation
+## 📚 Documentation
+
+- [Technical Interview Guide](docs/INTERVIEW_GUIDE.md) - Deep dive into all decisions
+- [Industry Comparison](docs/COMPARISON.md) - How we compare to AssemblyAI, Deepgram, Glean
+- [Sales & Technical Guide](docs/SALES_TECHNICAL_GUIDE.md) - Complete buyer documentation
+- [Kubernetes Guide](k8s/README.md) - Production deployment
+
+## 🔧 Configuration
+```yaml
+# configs/base.yaml
+asr:
+  backend: faster-whisper
+  model_size: large-v3
+
+contextual:
+  enabled: true
+  window_size: 1
+
+retrieval:
+  search_type: hybrid
+  top_k: 5
+
+reranking:
+  backend: bge-reranker
+
+generation:
+  backend: ollama
+  model: llama3.2:latest
+```
+
+## 📈 Evaluation
 ```python
 from audio_rag.evaluation import RAGEvaluator, CS229_EVAL_DATASET
 
-evaluator = RAGEvaluator(use_nli=True, use_semantic=True)
+evaluator = RAGEvaluator(use_nli=True)
 results = evaluator.evaluate_dataset(pipeline, CS229_EVAL_DATASET)
-summary = evaluator.summarize_results(results)
-evaluator.print_summary(summary)
+evaluator.print_summary(results)
 ```
-
-### Available Metrics
-
-| Category | Metrics |
-|----------|---------|
-| Retrieval | Precision@K, Recall@K, MRR, NDCG, Hit Rate |
-| Generation | Faithfulness, Answer Similarity, NLI Score, BLEU |
-| Performance | Latency (avg, p95), Throughput |
-
-## 🏢 Multi-Tenant Support
-```python
-# Each organization gets isolated collection
-rag.ingest('lecture1.wav', collection_name='university_a')
-rag.ingest('meeting.wav', collection_name='enterprise_b')
-
-# Queries are isolated
-result = rag.query('budget discussion', collection_name='enterprise_b')
-```
-
-## 🔧 Advanced Features
-
-### HyDE Query Expansion
-```python
-# Generates hypothetical answer, embeds that instead of raw query
-result = rag.query('What is attention?', enable_hyde=True)
-print(f"HyDE used: {result.hyde_used}")
-print(f"Expanded: {result.expanded_query[:100]}...")
-```
-
-### Contextual Retrieval
-```python
-# Add context during ingestion (requires re-indexing)
-result = rag.ingest('lecture.wav', enable_contextual=True)
-# Chunks now have: "[Context: This discusses...]\nOriginal text..."
-```
-
-### Custom Evaluation Dataset
-```python
-from audio_rag.evaluation import EvalDataset, EvalSample
-
-dataset = EvalDataset(
-    name="my_eval",
-    samples=[
-        EvalSample(
-            question="What is X?",
-            ground_truth="X is...",
-            ground_truth_contexts=["keyword1", "keyword2"],
-        ),
-    ],
-)
-dataset.to_json("my_eval.json")
-```
-
-## 📈 Comparison with Industry Solutions
-
-See [docs/COMPARISON.md](docs/COMPARISON.md) for detailed comparison.
 
 ## 🤝 Contributing
 
@@ -293,8 +208,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) - ASR
-- [NeMo](https://github.com/NVIDIA/NeMo) - Diarization
-- [FlagEmbedding](https://github.com/FlagOpen/FlagEmbedding) - BGE-M3
-- [Qdrant](https://qdrant.tech/) - Vector database
-- [Ollama](https://ollama.ai/) - Local LLM inference
+- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)
+- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo)
+- [BGE-M3](https://github.com/FlagOpen/FlagEmbedding)
+- [Qdrant](https://qdrant.tech/)
+- [Ollama](https://ollama.ai/)
+- [Anthropic Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval)

@@ -1,300 +1,198 @@
-# Audio RAG Project Context
-**Last Updated:** 2025-01-04
-**Phase:** 5 Complete (Circuit Breakers & Resilience)
-**Next Phase:** 6 (LLM Integration or Production Deployment)
+# Audio RAG - Project Context
+
+## Project Status: PRODUCTION READY ✅
+
+**Last Updated:** January 2025
 
 ---
 
-## Current Status
+## What We Built
 
-### Completed Phases
+### Core System
+| Component | Technology | Status |
+|-----------|------------|--------|
+| ASR | Faster-Whisper Large-v3 | ✅ Complete |
+| Diarization | NVIDIA NeMo | ✅ Complete |
+| Alignment | Custom word-to-speaker | ✅ Complete |
+| Chunking | Speaker-turn (256 tokens) | ✅ Complete |
+| Embeddings | BGE-M3 (dense + sparse) | ✅ Complete |
+| Vector DB | Qdrant (hybrid search) | ✅ Complete |
+| Reranking | BGE-reranker-base | ✅ Complete |
+| Generation | Ollama (Llama 3.2) | ✅ Complete |
 
-#### Phase 1: Queue System ✅
-- Redis + RQ job queue for async audio processing
-- Priority queues (high, normal, low)
-- Tenant isolation (collection per course for FERPA)
-- Idempotency keys to prevent duplicate jobs
-- Job lifecycle: PENDING → RUNNING → COMPLETED/FAILED
+### Advanced Features
+| Feature | Impact | Status |
+|---------|--------|--------|
+| Contextual Retrieval | +47% precision | ✅ Complete |
+| Hybrid Search (RRF) | -31% latency | ✅ Complete |
+| HyDE Query Expansion | +113% NLI | ✅ Complete |
+| Real-time Streaming | 5-7s latency | ✅ Complete |
 
-**Files:**
+### Infrastructure
+| Component | Technology | Status |
+|-----------|------------|--------|
+| API | FastAPI + Uvicorn | ✅ Complete |
+| Frontend | React + Tailwind | ✅ Complete |
+| Job Queue | Redis + RQ | ✅ Complete |
+| Docker | Compose + GPU support | ✅ Complete |
+| Kubernetes | Helm charts | ✅ Complete |
+
+---
+
+## Performance Metrics
+
+### Retrieval Quality (CS229 Dataset)
+| Config | Precision@5 | MRR | NDCG |
+|--------|-------------|-----|------|
+| Baseline | 0.425 | 0.650 | 0.652 |
+| **Contextual** | **0.625** | **0.875** | **0.942** |
+
+### Latency
+| Operation | P50 |
+|-----------|-----|
+| Search only | 104ms |
+| With reranking | 141ms |
+| With generation | 584ms |
+| Throughput | 7.1 qps |
+
+### Streaming
+| Metric | Value |
+|--------|-------|
+| Real-time factor | 0.66x |
+| Chunk latency | 5-7 seconds |
+
+---
+
+## File Structure
 ```
-src/audio_rag/queue/
-├── __init__.py
-├── exceptions.py      # 10+ custom exceptions
-├── job.py             # IngestJob, JobResult, JobCheckpoint
-├── config.py          # QueueConfig, RedisConfig, WorkerConfig
-├── connection.py      # RedisConnectionManager with circuit breaker
-├── validation.py      # Audio + Tenant validators
-├── queue.py           # AudioRAGQueue main class
-└── worker.py          # GPUWorker for ML processing
+audio-rag/
+├── src/audio_rag/
+│   ├── asr/
+│   │   ├── whisper.py          # Batch ASR
+│   │   └── streaming.py        # Real-time ASR
+│   ├── diarization/            # NeMo speaker ID
+│   ├── alignment/              # Word-to-speaker
+│   ├── chunking/               # Speaker-turn chunking
+│   ├── contextual/             # LLM context generation
+│   ├── embeddings/             # BGE-M3 dense+sparse
+│   ├── retrieval/              # Qdrant hybrid search
+│   ├── reranking/              # BGE CrossEncoder
+│   ├── expansion/              # HyDE
+│   ├── generation/             # Ollama LLM
+│   ├── evaluation/             # RAGAS metrics
+│   ├── pipeline/               # Orchestration
+│   ├── queue/                  # Redis jobs
+│   ├── api/
+│   │   └── v1/
+│   │       ├── query.py        # Search endpoint
+│   │       ├── ingest.py       # Upload endpoint
+│   │       └── streaming.py    # WebSocket endpoint
+│   └── config/                 # Pydantic schemas
+├── frontend/
+│   ├── src/
+│   │   ├── pages/              # Home, Search, Upload, Streaming
+│   │   ├── components/         # Layout, SearchBar, Results, etc.
+│   │   └── api/                # Client SDK
+│   └── Dockerfile              # Production build
+├── k8s/
+│   └── helm/audio-rag/
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/          # All K8s manifests
+├── docs/
+│   ├── COMPARISON.md           # Industry comparison
+│   ├── INTERVIEW_GUIDE.md      # Technical deep dive
+│   └── SALES_TECHNICAL_GUIDE.md # Sales documentation
+├── docker-compose.yml          # Local deployment
+├── Dockerfile.api              # API image
+└── Dockerfile.worker           # GPU worker image
 ```
 
-#### Phase 2: API Layer ✅
-- FastAPI with async endpoints
-- API versioning (/api/v1/)
-- Rate limiting (Redis sliding window)
-- API key authentication
-- File upload handling
+---
 
-**Endpoints:**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /health/live | Liveness probe |
-| GET | /health/ready | Readiness (checks Redis, Qdrant) |
-| GET | /api/v1/ | API info |
-| POST | /api/v1/ingest | Upload audio → returns job_id |
-| GET | /api/v1/jobs/{id} | Job status |
-| DELETE | /api/v1/jobs/{id} | Cancel job |
-| POST | /api/v1/query | Search audio chunks |
+## Quick Commands
 
-**Files:**
-```
-src/audio_rag/api/
-├── __init__.py
-├── app.py             # create_app() factory
-├── config.py          # APIConfig, rate limits, timeouts
-├── deps.py            # Dependencies (auth, rate limit)
-├── health.py          # Health check endpoints
-├── middleware.py      # Logging, error handling
-├── schemas.py         # Pydantic models
-└── v1/
-    ├── router.py
-    ├── ingest.py
-    ├── jobs.py
-    └── query.py
-```
-
-#### Phase 3: Testing Framework ✅
-- pytest + pytest-asyncio + pytest-cov
-- fakeredis for Redis mocking
-- 89 tests passing initially
-
-**Test Structure:**
-```
-tests/
-├── conftest.py
-├── unit/
-│   ├── queue/         # 48 tests
-│   ├── api/           # 16 tests
-│   └── core/          # 33 tests
-└── integration/       # 18 tests
-```
-
-#### Phase 4: Docker Production Setup ✅
-- Multi-stage builds (minimal images)
-- Non-root user (security)
-- Health checks (Kubernetes-ready)
-- GPU support via NVIDIA Container Toolkit
-
-**Files:**
-```
-.dockerignore
-Dockerfile.api          # API server (~150MB)
-Dockerfile.worker       # GPU worker (~8GB)
-docker-compose.yml      # Full stack orchestration
-.env.example            # Environment template
-```
-
-**Docker Commands:**
+### Development
 ```bash
-# Infrastructure only
+# Start services
 docker compose up -d redis qdrant
+ollama pull llama3.2:latest
 
-# Full stack (no GPU)
-docker compose up -d
+# Run API
+uvicorn audio_rag.api:create_app --factory --port 8000
 
-# With GPU worker
+# Run frontend
+cd frontend && npm run dev
+```
+
+### Production (Docker)
+```bash
 docker compose --profile gpu up -d
 ```
 
-#### Phase 5: Circuit Breakers & Resilience ✅
-- Circuit breaker pattern for external services
-- Retry with exponential backoff (tenacity)
-- Fallback chains for graceful degradation
-- Timeout patterns for async operations
-
-**Resilience Patterns:**
-| Pattern | Use Case | Config |
-|---------|----------|--------|
-| Circuit Breaker | Redis, Qdrant, HuggingFace | fail_max=5, reset=30s |
-| Retry | Transient failures | 3 attempts, exponential backoff |
-| Fallback | Model loading | GPU→CPU→smaller model |
-| Timeout | All operations | Per-component limits |
-
-**Files:**
-```
-src/audio_rag/core/resilience/
-├── __init__.py
-├── circuit_breaker.py  # CircuitBreaker, CircuitState
-├── retry.py            # retry_with_backoff, retry_redis, retry_qdrant
-├── fallback.py         # FallbackChain, has_cuda, has_gpu_memory
-└── timeout.py          # async_timeout, with_timeout, TimeoutConfig
-```
-
-**Pre-configured Breakers:**
-- `REDIS_BREAKER_CONFIG`: 5 failures, 30s reset
-- `QDRANT_BREAKER_CONFIG`: 3 failures, 60s reset
-- `HUGGINGFACE_BREAKER_CONFIG`: 3 failures, 120s reset
-
-**Pre-built Fallback Chains:**
-- `create_asr_fallback_chain()`: large-v3→medium→base→CPU
-- `create_embedding_fallback_chain()`: BGE-M3 GPU→CPU
-
----
-
-## Test Summary
-
-**Total: 126 tests passing**
-
-| Category | Count |
-|----------|-------|
-| Queue (job, config, validation) | 48 |
-| API (schemas) | 16 |
-| Resilience (circuit breaker, retry, fallback, timeout) | 33 |
-| Integration (health, ingest, jobs) | 18 |
-| **Total** | **126** |
-
----
-
-## Architecture Overview
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Client                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    FastAPI Server (api)                          │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Circuit Breaker → Retry → Timeout → Rate Limit         │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│  /api/v1/ingest  /api/v1/jobs  /api/v1/query  /health/*         │
-└─────────────────────────────────────────────────────────────────┘
-           │                                      │
-           ▼                                      ▼
-┌─────────────────────┐              ┌─────────────────────┐
-│       Redis         │              │       Qdrant        │
-│   - Job Queue       │              │   - Vector Store    │
-│   - Rate Limits     │              │   - Collections     │
-│   - Circuit State   │              │                     │
-└─────────────────────┘              └─────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    GPU Worker (worker)                           │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Fallback Chain: large-v3 → medium → base → CPU         │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│  ASR (Whisper) → Diarization (PyAnnote) → Embeddings (BGE-M3)   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Key Decisions Made
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Job Queue | Redis + RQ | Simple, Python-native, fits pilot scale |
-| API Framework | FastAPI | Async, OpenAPI docs, Pydantic |
-| Multi-tenancy | Collection per course | FERPA isolation |
-| Auth | API keys | Simple start, OAuth later |
-| Versioning | URI path (/api/v1/) | Clear, cacheable |
-| Docker base | python:3.11-slim | Balance size/compatibility |
-| GPU base | pytorch/pytorch:2.4.0-cuda12.1 | Pre-built PyTorch+CUDA |
-| Resilience | tenacity + custom | Production-tested retry library |
-| Circuit Breaker | Custom implementation | Lightweight, no external deps |
-
----
-
-## Dependencies Added
-```toml
-# Core
-redis = "^5.0"
-rq = "^1.16"
-fastapi = "^0.115"
-uvicorn = { version = "^0.32", extras = ["standard"] }
-python-multipart = "^0.0.9"
-aiofiles = "^24.1"
-httpx = "^0.27"
-
-# Resilience
-tenacity = "^9.0"
-pybreaker = "^1.2"
-
-# Dev
-pytest = "^9.0"
-pytest-asyncio = "^1.3"
-pytest-cov = "^7.0"
-fakeredis = "^2.25"
-```
-
----
-
-## Running the Project
+### Production (Kubernetes)
 ```bash
-# Start infrastructure
-docker compose up -d redis qdrant
+helm install audio-rag ./k8s/helm/audio-rag -n audio-rag --create-namespace
+```
 
-# Install dependencies
-uv sync
+### Testing
+```bash
+# Test streaming
+uv run python scripts/test_streaming.py --file audio.wav
 
-# Run API server
-uv run uvicorn audio_rag.api.app:create_app --factory --reload
-
-# Run tests
-uv run pytest tests/ -v
-
-# Run with coverage
-uv run pytest --cov=src/audio_rag --cov-report=term-missing
+# Test WebSocket
+uv run python scripts/test_streaming.py --websocket
 ```
 
 ---
 
-## Next Steps Options
+## API Endpoints
 
-### Option A: LLM Integration (Claude API)
-- Add Claude for response synthesis
-- Implement RAG query pipeline
-- Add streaming responses
-
-### Option B: Production Deployment
-- CI/CD with GitHub Actions
-- Kubernetes manifests
-- Monitoring (Prometheus + Grafana)
-
-### Option C: Frontend
-- React/Next.js UI
-- Audio upload interface
-- Search results display
-
-### Option D: Worker Implementation
-- Complete GPU worker integration
-- Test with real audio files
-- End-to-end pipeline testing
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/query` | POST | Search with AI answers |
+| `/api/v1/ingest` | POST | Upload audio file |
+| `/api/v1/jobs/{id}` | GET | Check job status |
+| `/api/v1/ws/transcribe` | WebSocket | Real-time streaming |
+| `/api/v1/streaming/status` | GET | Streaming status |
+| `/health/live` | GET | Liveness probe |
+| `/health/ready` | GET | Readiness probe |
 
 ---
 
-## Known Issues
+## Configuration
 
-1. **Qdrant version warning:** Client 1.16.2 vs Server 1.12.0 (minor)
-2. **Deprecation warning:** HTTP_422_UNPROCESSABLE_ENTITY (cosmetic)
-3. **Worker not tested:** Requires GPU + models for full testing
+### Environment Variables
+```bash
+AUDIO_RAG_ENV=production
+REDIS_URL=redis://localhost:6379/0
+QDRANT_URL=http://localhost:6333
+OLLAMA_URL=http://localhost:11434
+```
+
+### Key Config Options
+```yaml
+contextual:
+  enabled: true           # +47% precision
+  window_size: 1
+
+retrieval:
+  search_type: hybrid     # dense + sparse
+  top_k: 5
+
+reranking:
+  backend: bge-reranker
+
+expansion:
+  backend: none           # or "hyde"
+```
 
 ---
 
-## Documentation
+## Next Steps for UNT Pilot
 
-| File | Purpose |
-|------|---------|
-| `PROJECT_CONTEXT.md` | This file - project state |
-| `FAILURE_AND_FUTURE_PROOFING.md` | Failure analysis, resilience patterns |
-| `SCALABILITY_AND_BUSINESS.md` | Business model, pricing, scaling |
-
----
-
-## Contact
-
-**Developer:** Adnan
-**Project:** Audio RAG System
-**Target:** UNT Pilot (Spring 2026)
+1. [ ] Build Docker images and push to registry
+2. [ ] Configure `values-unt.yaml` for UNT K8s
+3. [ ] Ingest CS 5500 Fall 2025 lectures
+4. [ ] Set up student access (API keys)
+5. [ ] Monitor and tune performance
