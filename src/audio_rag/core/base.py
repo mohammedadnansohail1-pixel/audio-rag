@@ -4,6 +4,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 
+
+@dataclass
+class Word:
+    """A single word with timing."""
+    word: str
+    start: float
+    end: float
+    confidence: float | None = None
+    speaker: str | None = None
+
 @dataclass
 class TranscriptSegment:
     """A segment of transcribed audio with timing."""

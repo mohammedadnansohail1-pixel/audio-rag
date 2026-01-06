@@ -1,6 +1,7 @@
 """Core components: registry, base classes, exceptions."""
 from audio_rag.core.registry import Registry
 from audio_rag.core.base import (
+    Word,
     TranscriptSegment,
     AudioChunk,
     SparseVector,
@@ -31,6 +32,7 @@ from audio_rag.core.exceptions import (
 
 __all__ = [
     "Registry",
+    "Word",
     "TranscriptSegment",
     "AudioChunk",
     "SparseVector",
