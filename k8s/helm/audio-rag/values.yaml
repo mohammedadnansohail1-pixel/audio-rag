@@ -1,0 +1,184 @@
+# =============================================================================
+# Audio RAG Helm Values
+# =============================================================================
+
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+
+# ---------------------------------------------------------------------------
+# API Service
+# ---------------------------------------------------------------------------
+api:
+  replicaCount: 2
+  image:
+    repository: audio-rag-api
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8000
+  
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    hosts:
+      - host: audio-rag.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+  
+  env:
+    AUDIO_RAG_ENV: production
+    AUDIO_RAG_LOG_LEVEL: INFO
+    UVICORN_WORKERS: "4"
+
+# ---------------------------------------------------------------------------
+# GPU Worker
+# ---------------------------------------------------------------------------
+worker:
+  replicaCount: 1
+  image:
+    repository: audio-rag-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 8Gi
+      nvidia.com/gpu: 1
+    limits:
+      cpu: 4000m
+      memory: 16Gi
+      nvidia.com/gpu: 1
+  
+  nodeSelector:
+    nvidia.com/gpu: "true"
+  
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  
+  env:
+    AUDIO_RAG_ENV: production
+    CUDA_VISIBLE_DEVICES: "0"
+    WORKER_QUEUE: "high,normal,low"
+
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+frontend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: audio-rag-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 80
+  
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Redis
+# ---------------------------------------------------------------------------
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Qdrant
+# ---------------------------------------------------------------------------
+qdrant:
+  enabled: true
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 2000m
+      memory: 8Gi
+
+# ---------------------------------------------------------------------------
+# Ollama (LLM)
+# ---------------------------------------------------------------------------
+ollama:
+  enabled: true
+  replicaCount: 1
+  model: llama3.2:latest
+  persistence:
+    enabled: true
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 8Gi
+      nvidia.com/gpu: 1
+    limits:
+      cpu: 4000m
+      memory: 16Gi
+      nvidia.com/gpu: 1
+
+# ---------------------------------------------------------------------------
+# Shared Configuration
+# ---------------------------------------------------------------------------
+persistence:
+  uploads:
+    enabled: true
+    size: 100Gi
+    accessMode: ReadWriteMany
+  models:
+    enabled: true
+    size: 50Gi
+    accessMode: ReadWriteMany
+
+secrets:
+  apiKey: "change-me-in-production"
+  hfToken: ""

@@ -1,0 +1,31 @@
+=============================================================================
+  Audio RAG has been deployed!
+=============================================================================
+
+1. Get the application URL:
+{{- if .Values.api.ingress.enabled }}
+{{- range .Values.api.ingress.hosts }}
+  http{{ if $.Values.api.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+  kubectl port-forward svc/{{ .Release.Name }}-api 8000:8000
+  kubectl port-forward svc/{{ .Release.Name }}-frontend 3000:80
+{{- end }}
+
+2. Access the services:
+   - Frontend: http://localhost:3000
+   - API:      http://localhost:8000
+   - API Docs: http://localhost:8000/docs
+
+3. Check pod status:
+   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+4. View logs:
+   kubectl logs -l app.kubernetes.io/component=api -f
+   kubectl logs -l app.kubernetes.io/component=worker -f
+
+5. Scale workers:
+   kubectl scale deployment/{{ .Release.Name }}-worker --replicas=2
+
+For more information, visit:
+https://github.com/mohammedadnansohail1-pixel/audio-rag
