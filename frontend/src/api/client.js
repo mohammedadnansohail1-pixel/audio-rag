@@ -23,20 +23,21 @@ export async function searchAudio(query, options = {}) {
   return response.data;
 }
 
-// Get collection info
-export async function getCollectionCount(collection) {
-  const response = await client.get(`/api/v1/collections/${collection}/count`);
-  return response.data;
-}
-
-// List collections (via Qdrant directly for now)
+// List collections (via backend API, not direct Qdrant)
 export async function listCollections() {
   try {
-    const response = await axios.get('http://localhost:6333/collections');
-    return response.data.result.collections.map(c => c.name);
-  } catch {
+    const response = await client.get('/api/v1/collections');
+    return response.data;
+  } catch (error) {
+    console.warn('Failed to fetch collections, using defaults:', error.message);
     return ['audio_rag_contextual', 'audio_rag_hybrid'];
   }
+}
+
+// Get collection info
+export async function getCollectionInfo(collection) {
+  const response = await client.get(`/api/v1/collections/${collection}`);
+  return response.data;
 }
 
 // Ingest audio (multipart form)

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Mic, MicOff, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Loader2, AlertTriangle } from 'lucide-react';
 import { getStreamingUrl } from '../api/client';
 
 export default function StreamingMic() {
@@ -18,13 +18,13 @@ export default function StreamingMic() {
     setIsConnecting(true);
     
     try {
-      // Get microphone access
+      // Request microphone - let browser choose best sample rate
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         } 
       });
       mediaStreamRef.current = stream;
@@ -57,7 +57,7 @@ export default function StreamingMic() {
       };
       
       ws.onerror = () => {
-        setError('WebSocket connection failed');
+        setError('WebSocket connection failed. Is the API server running?');
         stopRecording();
       };
       
@@ -73,21 +73,52 @@ export default function StreamingMic() {
   };
   
   const startAudioProcessing = (stream) => {
-    const audioContext = new AudioContext({ sampleRate: 16000 });
+    // Create audio context - use device's native sample rate
+    const audioContext = new AudioContext();
     audioContextRef.current = audioContext;
     
     const source = audioContext.createMediaStreamSource(stream);
+    
+    // Note: ScriptProcessorNode is deprecated but widely supported.
+    // For production, consider migrating to AudioWorklet.
+    // See: https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletNode
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
     processorRef.current = processor;
+    
+    // Calculate resampling ratio to get 16kHz
+    const inputSampleRate = audioContext.sampleRate;
+    const outputSampleRate = 16000;
+    const ratio = inputSampleRate / outputSampleRate;
     
     processor.onaudioprocess = (e) => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         const inputData = e.inputBuffer.getChannelData(0);
-        // Convert float32 to int16
-        const int16Data = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          int16Data[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+        
+        // Resample to 16kHz if needed
+        let outputData;
+        if (Math.abs(ratio - 1) < 0.01) {
+          // Already ~16kHz
+          outputData = inputData;
+        } else {
+          // Simple linear resampling
+          const outputLength = Math.floor(inputData.length / ratio);
+          outputData = new Float32Array(outputLength);
+          for (let i = 0; i < outputLength; i++) {
+            const srcIndex = i * ratio;
+            const srcIndexFloor = Math.floor(srcIndex);
+            const srcIndexCeil = Math.min(srcIndexFloor + 1, inputData.length - 1);
+            const t = srcIndex - srcIndexFloor;
+            outputData[i] = inputData[srcIndexFloor] * (1 - t) + inputData[srcIndexCeil] * t;
+          }
         }
+        
+        // Convert float32 to int16
+        const int16Data = new Int16Array(outputData.length);
+        for (let i = 0; i < outputData.length; i++) {
+          const s = Math.max(-1, Math.min(1, outputData[i]));
+          int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        
         wsRef.current.send(int16Data.buffer);
       }
     };
@@ -192,7 +223,8 @@ export default function StreamingMic() {
       
       {/* Error */}
       {error && (
-        <div className="p-4 bg-red-50 text-red-700 rounded-lg text-center">
+        <div className="p-4 bg-red-50 text-red-700 rounded-lg flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5" />
           {error}
         </div>
       )}
